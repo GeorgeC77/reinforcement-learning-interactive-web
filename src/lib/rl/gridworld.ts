@@ -54,6 +54,31 @@ export const DEFAULT_CONFIG: GridWorldConfig = {
   gamma: 0.9,
 };
 
+/** GridWorld with mild boundary penalty (for illustrating policy factors). */
+export const MILD_BOUNDARY_CONFIG: GridWorldConfig = {
+  ...DEFAULT_CONFIG,
+  boundaryReward: -0.3,
+};
+
+/** GridWorld with target in the center-top (for varying optimal paths). */
+export const CENTER_TARGET_CONFIG: GridWorldConfig = {
+  ...DEFAULT_CONFIG,
+  targetState: 4,
+  forbiddenStates: [2],
+};
+
+/** GridWorld with high discount factor (far-sighted policies). */
+export const FAR_SIGHTED_CONFIG: GridWorldConfig = {
+  ...DEFAULT_CONFIG,
+  gamma: 0.99,
+};
+
+/** GridWorld with low discount factor (short-sighted policies). */
+export const SHORT_SIGHTED_CONFIG: GridWorldConfig = {
+  ...DEFAULT_CONFIG,
+  gamma: 0.3,
+};
+
 export function stateToRowCol(state: number, cols: number): { row: number; col: number } {
   return { row: Math.floor(state / cols), col: state % cols };
 }
@@ -698,4 +723,240 @@ export function actorCritic(
   }
 
   return { values, policies, rewardHistory };
+}
+
+
+/**
+ * Mean estimation by sample average (motivating example for MC and SA).
+ * Returns the history of estimates.
+ */
+export function sampleMeanEstimation(
+  trueMean: number,
+  initialEstimate: number,
+  samples: number
+): { estimates: number[]; samples: number[] } {
+  let estimate = initialEstimate;
+  const estimates: number[] = [estimate];
+  const sampleHistory: number[] = [];
+
+  for (let i = 0; i < samples; i++) {
+    const x = trueMean + (Math.random() * 2 - 1);
+    sampleHistory.push(x);
+    estimate += (x - estimate) / (i + 1);
+    estimates.push(estimate);
+  }
+
+  return { estimates, samples: sampleHistory };
+}
+
+/**
+ * Robbins-Monro algorithm for finding root of g(w) = E[f(w, eta)] = 0.
+ * Here we solve g(w) = w - wTrue = 0 with noisy observations.
+ * stepSizes is an array of alpha_k.
+ */
+export function robbinsMonro(
+  wTrue: number,
+  initialW: number,
+  stepSizes: number[]
+): number[] {
+  const history: number[] = [initialW];
+  let w = initialW;
+
+  for (const alpha of stepSizes) {
+    const noise = (Math.random() * 2 - 1) * 0.5;
+    const observation = w - wTrue + noise;
+    w -= alpha * observation;
+    history.push(w);
+  }
+
+  return history;
+}
+
+/**
+ * Dvoretzky-style mean estimation: w_{k+1} = w_k + alpha_k (x_k - w_k).
+ * Returns the history of estimates.
+ */
+export function dvoretzkyMeanEstimation(
+  trueMean: number,
+  initialW: number,
+  stepSizes: number[]
+): number[] {
+  const history: number[] = [initialW];
+  let w = initialW;
+
+  for (const alpha of stepSizes) {
+    const x = trueMean + (Math.random() * 2 - 1);
+    w += alpha * (x - w);
+    history.push(w);
+  }
+
+  return history;
+}
+
+/**
+ * Generate step sizes alpha_k = 1 / k^power, optionally shifted.
+ */
+export function powerStepSizes(
+  n: number,
+  power: number = 1,
+  offset: number = 1
+): number[] {
+  return Array.from({ length: n }, (_, i) => 1 / Math.pow(i + offset, power));
+}
+
+/**
+ * MC Basic: for each (s,a), run numEpisodes episodes and average returns.
+ * This is the textbook model-free conversion of policy iteration.
+ */
+export function mcBasic(
+  config: GridWorldConfig,
+  numEpisodesPerPair: number = 20,
+  maxSteps: number = 30
+): { qValues: number[][]; returns: number[][][] } {
+  const numStates = config.rows * config.cols;
+  const numActions = 5;
+  const returns: number[][][] = Array.from({ length: numStates }, () =>
+    Array.from({ length: numActions }, () => [])
+  );
+
+  // Use a uniform random behavior policy for generating episodes
+  const behaviorPolicy = randomPolicy(numStates, numActions);
+
+  for (let s = 0; s < numStates; s++) {
+    for (let a = 0; a < numActions; a++) {
+      for (let ep = 0; ep < numEpisodesPerPair; ep++) {
+        const traj = generateTrajectory(s, behaviorPolicy, config, maxSteps, a as Action);
+        const g = discountedReturn(traj, config.gamma);
+        returns[s][a].push(g);
+      }
+    }
+  }
+
+  const qValues = returns.map((sReturns) =>
+    sReturns.map((aReturns) =>
+      aReturns.length > 0
+        ? aReturns.reduce((sum, g) => sum + g, 0) / aReturns.length
+        : 0
+    )
+  );
+
+  return { qValues, returns };
+}
+
+/**
+ * n-step Sarsa: on-policy TD control with n-step returns.
+ * Returns history of Q-values (one entry per episode).
+ */
+export function nStepSarsa(
+  config: GridWorldConfig,
+  alpha: number = 0.1,
+  epsilon: number = 0.3,
+  n: number = 3,
+  episodes: number = 200,
+  maxSteps: number = 30
+): number[][][] {
+  const numStates = config.rows * config.cols;
+  const numActions = 5;
+  let q = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
+  const history: number[][][] = [q.map((row) => [...row])];
+
+  for (let ep = 0; ep < episodes; ep++) {
+    let state = config.startState;
+    const states: number[] = [state];
+    const actions: Action[] = [];
+    const rewards: number[] = [0];
+
+    let policy = epsilonGreedyPolicy(q, epsilon);
+    let action = sampleAction(policy[state]);
+    actions.push(action);
+
+    let t = 0;
+    let T = Infinity;
+
+    while (true) {
+      if (t < T) {
+        if (isTerminal(state, config)) {
+          T = t;
+        } else {
+          const sNext = nextState(state, action, config);
+          const r = reward(sNext, config);
+          states.push(sNext);
+          rewards.push(r);
+          policy = epsilonGreedyPolicy(q, epsilon);
+          const aNext = sampleAction(policy[sNext]);
+          actions.push(aNext);
+        }
+      }
+
+      const tau = t - n + 1;
+      if (tau >= 0) {
+        let G = 0;
+        for (let i = tau + 1; i <= Math.min(tau + n, T); i++) {
+          G += Math.pow(config.gamma, i - tau - 1) * rewards[i];
+        }
+        if (tau + n < T) {
+          G += Math.pow(config.gamma, n) * q[states[tau + n]][actions[tau + n]];
+        }
+        const sTau = states[tau];
+        const aTau = actions[tau];
+        q[sTau][aTau] += alpha * (G - q[sTau][aTau]);
+      }
+
+      if (tau === T - 1) break;
+
+      state = states[t + 1];
+      action = actions[t + 1];
+      t++;
+      if (t > maxSteps) break;
+    }
+
+    history.push(q.map((row) => [...row]));
+  }
+
+  return history;
+}
+
+/**
+ * REINFORCE with baseline for a multi-armed bandit.
+ * baseline is updated incrementally.
+ */
+export function reinforceWithBaseline(
+  actionRewards: number[],
+  initialTheta: number[],
+  alpha: number,
+  beta: number,
+  episodes: number
+): {
+  thetaHistory: number[][];
+  policyHistory: number[][];
+  rewardHistory: number[];
+  baselineHistory: number[];
+} {
+  const theta = [...initialTheta];
+  let baseline = 0;
+  const thetaHistory: number[][] = [[...theta]];
+  const policyHistory: number[][] = [softmaxPolicy(theta)];
+  const rewardHistory: number[] = [];
+  const baselineHistory: number[] = [baseline];
+
+  for (let ep = 0; ep < episodes; ep++) {
+    const policy = softmaxPolicy(theta);
+    const action = sampleAction(policy);
+    const r = actionRewards[action] + (Math.random() * 2 - 1) * 0.5;
+    rewardHistory.push(r);
+
+    baseline += beta * (r - baseline);
+    baselineHistory.push(baseline);
+
+    const advantage = r - baseline;
+    for (let a = 0; a < theta.length; a++) {
+      const indicator = a === action ? 1 : 0;
+      theta[a] += alpha * advantage * (indicator - policy[a]);
+    }
+
+    thetaHistory.push([...theta]);
+    policyHistory.push(softmaxPolicy(theta));
+  }
+
+  return { thetaHistory, policyHistory, rewardHistory, baselineHistory };
 }
