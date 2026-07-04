@@ -225,6 +225,62 @@ export function computeBellmanComponents(
 }
 
 /**
+ * Decompose the Bellman backup for a single state:
+ * v(s) = r_pi(s) + gamma * sum_{s'} P_pi(s,s') * v(s').
+ */
+export function computeBellmanBackup(
+  state: number,
+  values: StateValues,
+  policy: Policy,
+  config: GridWorldConfig
+): {
+  immediateReward: number;
+  futureValue: number;
+  backupValue: number;
+  contributions: { nextState: number; prob: number; value: number; weightedValue: number }[];
+} {
+  const { rPi, pPi } = computeBellmanComponents(policy, config);
+  const immediateReward = rPi[state];
+  let futureValue = 0;
+  const contributions: { nextState: number; prob: number; value: number; weightedValue: number }[] = [];
+  for (let sNext = 0; sNext < values.length; sNext++) {
+    const prob = pPi[state][sNext];
+    if (prob === 0) continue;
+    const weightedValue = prob * values[sNext];
+    futureValue += weightedValue;
+    contributions.push({ nextState: sNext, prob, value: values[sNext], weightedValue });
+  }
+  futureValue *= config.gamma;
+  return { immediateReward, futureValue, backupValue: immediateReward + futureValue, contributions };
+}
+
+/**
+ * Estimate the state value of a start state by Monte Carlo sample averages.
+ * Returns the history of estimates after each episode.
+ */
+export function estimateStateValueMC(
+  startState: number,
+  policy: Policy,
+  config: GridWorldConfig,
+  numEpisodes: number,
+  maxSteps: number = 30
+): { estimates: number[]; returns: number[] } {
+  const estimates: number[] = [];
+  const returns: number[] = [];
+  let sum = 0;
+
+  for (let ep = 0; ep < numEpisodes; ep++) {
+    const traj = generateTrajectory(startState, policy, config, maxSteps);
+    const g = discountedReturn(traj, config.gamma);
+    sum += g;
+    returns.push(g);
+    estimates.push(sum / (ep + 1));
+  }
+
+  return { estimates, returns };
+}
+
+/**
  * Solve state values exactly: v = (I - gamma * P_pi)^{-1} * r_pi.
  */
 export function solveStateValues(policy: Policy, config: GridWorldConfig): StateValues {

@@ -89,6 +89,20 @@ export const courseManifest: Part[] = [
             status: "completed",
             description: "贝尔曼方程的推导、矩阵形式与迭代求解。",
           },
+          {
+            id: "ch02-state-values",
+            title: "2.2 状态值函数",
+            path: "/ch02/state-values",
+            status: "completed",
+            description: "策略评估、状态值比较与蒙特卡洛收敛。",
+          },
+          {
+            id: "ch02-action-values",
+            title: "2.3 动作值函数",
+            path: "/ch02/action-values",
+            status: "completed",
+            description: "q(s,a) 与 v(s) 的关系。",
+          },
         ],
       },
       {

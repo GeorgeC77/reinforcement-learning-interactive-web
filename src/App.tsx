@@ -12,6 +12,8 @@ import Chapter01ReturnsPage from './pages/chapters/chapter01/ReturnsPage';
 // Chapter 2: State Values and Bellman Equation
 import Chapter02OverviewPage from './pages/chapters/chapter02/OverviewPage';
 import Chapter02BellmanPage from './pages/chapters/chapter02/BellmanPage';
+import Chapter02StateValuesPage from './pages/chapters/chapter02/StateValuesPage';
+import Chapter02ActionValuesPage from './pages/chapters/chapter02/ActionValuesPage';
 
 // Chapter 3: Bellman Optimality Equation
 import Chapter03OverviewPage from './pages/chapters/chapter03/OverviewPage';
@@ -62,6 +64,8 @@ function App() {
           {/* Chapter 2 */}
           <Route path="/ch02/overview" element={<Chapter02OverviewPage />} />
           <Route path="/ch02/bellman" element={<Chapter02BellmanPage />} />
+          <Route path="/ch02/state-values" element={<Chapter02StateValuesPage />} />
+          <Route path="/ch02/action-values" element={<Chapter02ActionValuesPage />} />
 
           {/* Chapter 3 */}
           <Route path="/ch03/overview" element={<Chapter03OverviewPage />} />

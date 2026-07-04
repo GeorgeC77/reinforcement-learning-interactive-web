@@ -18,6 +18,8 @@ import {
   Activity,
   Route,
   Gift,
+  BarChart3,
+  MousePointer2,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -58,7 +60,9 @@ const chapter01Items: NavItem[] = [
 
 const chapter02Items: NavItem[] = [
   { to: '/ch02/overview', label: '课程概览', icon: BookOpen },
-  { to: '/ch02/bellman', label: 'Bellman Equation', icon: Calculator },
+  { to: '/ch02/bellman', label: '贝尔曼方程', icon: Calculator },
+  { to: '/ch02/state-values', label: '状态值函数', icon: BarChart3 },
+  { to: '/ch02/action-values', label: '动作值函数', icon: MousePointer2 },
 ];
 
 const chapter03Items: NavItem[] = [

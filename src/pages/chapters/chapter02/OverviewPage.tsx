@@ -1,6 +1,5 @@
 import { Link } from 'react-router-dom';
-import { BookOpen, Calculator, ArrowRight, ShieldAlert } from 'lucide-react';
-import ConceptCard from '@/components/ConceptCard';
+import { BookOpen, Calculator, ArrowRight, ShieldAlert, BarChart3, MousePointer2 } from 'lucide-react';
 import KaTeX from '@/components/KaTeX';
 
 export default function Chapter02OverviewPage() {
@@ -31,43 +30,66 @@ export default function Chapter02OverviewPage() {
           <Calculator className="w-6 h-6 text-blue-600" />
           本章学习路线
         </h2>
-        <div className="grid md:grid-cols-2 gap-4">
-          <ConceptCard
-            icon={<Calculator className="w-5 h-5" />}
-            title="状态值函数"
-            description={
-              <>
-                <KaTeX math={String.raw`v_\pi(s) = \mathbb{E}[G_t | S_t = s]`} />：从状态 <KaTeX math={String.raw`s`} /> 出发，遵循策略 <KaTeX math={String.raw`\pi`} /> 的期望回报。
-              </>
-            }
-          />
-          <ConceptCard
-            icon={<Calculator className="w-5 h-5" />}
-            title="贝尔曼方程"
-            description={
-              <>
-                值函数之间的自举关系：<KaTeX math={String.raw`v = r_\pi + \gamma P_\pi v`} />。
-              </>
-            }
-          />
-          <ConceptCard
-            icon={<Calculator className="w-5 h-5" />}
-            title="矩阵形式"
-            description={
-              <>
-                闭式解 <KaTeX math={String.raw`v = (I - \gamma P_\pi)^{-1} r_\pi`} />。
-              </>
-            }
-          />
-          <ConceptCard
-            icon={<Calculator className="w-5 h-5" />}
-            title="迭代求解"
-            description={
-              <>
-                <KaTeX math={String.raw`v_{k+1} = r_\pi + \gamma P_\pi v_k`} /> 的收敛过程。
-              </>
-            }
-          />
+        <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <Link
+            to="/ch02/state-values"
+            className="group block bg-gray-50 hover:bg-blue-50 border border-gray-200 hover:border-blue-200 rounded-xl p-5 transition-colors"
+          >
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center group-hover:bg-blue-200 transition-colors">
+                <BarChart3 className="w-5 h-5 text-blue-600" />
+              </div>
+              <h3 className="font-semibold text-gray-900">状态值函数</h3>
+            </div>
+            <p className="text-sm text-gray-600">
+              策略评估、状态值比较，以及蒙特卡洛估计的收敛。
+            </p>
+          </Link>
+
+          <Link
+            to="/ch02/bellman"
+            className="group block bg-gray-50 hover:bg-indigo-50 border border-gray-200 hover:border-indigo-200 rounded-xl p-5 transition-colors"
+          >
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 bg-indigo-100 rounded-lg flex items-center justify-center group-hover:bg-indigo-200 transition-colors">
+                <Calculator className="w-5 h-5 text-indigo-600" />
+              </div>
+              <h3 className="font-semibold text-gray-900">贝尔曼方程</h3>
+            </div>
+            <p className="text-sm text-gray-600">
+              贝尔曼备份拆解、迭代求解与矩阵形式。
+            </p>
+          </Link>
+
+          <Link
+            to="/ch02/action-values"
+            className="group block bg-gray-50 hover:bg-violet-50 border border-gray-200 hover:border-violet-200 rounded-xl p-5 transition-colors"
+          >
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 bg-violet-100 rounded-lg flex items-center justify-center group-hover:bg-violet-200 transition-colors">
+                <MousePointer2 className="w-5 h-5 text-violet-600" />
+              </div>
+              <h3 className="font-semibold text-gray-900">动作值函数</h3>
+            </div>
+            <p className="text-sm text-gray-600">
+              q(s,a) 与 v(s) 的关系，以及未被选择动作的 q 值。
+            </p>
+          </Link>
+
+          <Link
+            to="/ch02/bellman"
+            className="group block bg-gray-50 hover:bg-emerald-50 border border-gray-200 hover:border-emerald-200 rounded-xl p-5 transition-colors"
+          >
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 bg-emerald-100 rounded-lg flex items-center justify-center group-hover:bg-emerald-200 transition-colors">
+                <Calculator className="w-5 h-5 text-emerald-600" />
+              </div>
+              <h3 className="font-semibold text-gray-900">矩阵求解</h3>
+            </div>
+            <p className="text-sm text-gray-600">
+              闭式解与迭代解的对比，已在贝尔曼方程页提供。
+            </p>
+          </Link>
         </div>
       </section>
 
@@ -85,12 +107,26 @@ export default function Chapter02OverviewPage() {
         </div>
       </section>
 
-      <section className="flex justify-end">
+      <section className="flex flex-wrap justify-end gap-3">
+        <Link
+          to="/ch02/state-values"
+          className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors"
+        >
+          状态值函数
+          <ArrowRight className="w-4 h-4" />
+        </Link>
         <Link
           to="/ch02/bellman"
-          className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors"
+          className="inline-flex items-center gap-2 px-5 py-2.5 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 transition-colors"
         >
-          进入贝尔曼方程交互演示
+          贝尔曼方程
+          <ArrowRight className="w-4 h-4" />
+        </Link>
+        <Link
+          to="/ch02/action-values"
+          className="inline-flex items-center gap-2 px-5 py-2.5 bg-violet-600 text-white rounded-lg font-medium hover:bg-violet-700 transition-colors"
+        >
+          动作值函数
           <ArrowRight className="w-4 h-4" />
         </Link>
       </section>
