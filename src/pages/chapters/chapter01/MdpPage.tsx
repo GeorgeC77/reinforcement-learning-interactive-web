@@ -1,7 +1,8 @@
 import { useState, useMemo } from 'react';
-import { Grid3x3, Play, RotateCcw, Info, ShieldAlert } from 'lucide-react';
+import { Grid3x3, Play, RotateCcw, Info, ShieldAlert, Shuffle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
+import { Switch } from '@/components/ui/switch';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import KaTeX from '@/components/KaTeX';
 import FormulaCard from '@/components/FormulaCard';
@@ -12,10 +13,14 @@ import {
   ACTION_NAMES,
   type Action,
   type Policy,
+  type GridWorldConfig,
   deterministicPolicy,
   nextState,
   reward,
+  rewardForAction,
   isTerminal,
+  transitionTable,
+  stochasticTransition,
 } from '@/lib/rl/gridworld';
 
 export default function Chapter01MdpPage() {
@@ -26,12 +31,15 @@ export default function Chapter01MdpPage() {
   const [agentState, setAgentState] = useState(config.startState);
   const [trajectory, setTrajectory] = useState<number[]>([config.startState]);
   const [selectedState, setSelectedState] = useState<number | null>(null);
-  const [message, setMessage] = useState('点击「运行一回合」开始交互演示');
+  const [message, setMessage] = useState('点击网格中的状态查看动作与转移细节，或点击「运行一回合」');
+  const [stochastic, setStochastic] = useState(false);
+  const [slip, setSlip] = useState(0.2);
 
   const selectedInfo = useMemo(() => {
     if (selectedState === null) return null;
     return {
       state: selectedState,
+      transitions: transitionTable(selectedState, config),
       reward: reward(selectedState, config),
       terminal: isTerminal(selectedState, config),
     };
@@ -49,7 +57,9 @@ export default function Chapter01MdpPage() {
       if (isTerminal(state, config)) break;
       const actionDist = policy[state];
       const action = sampleAction(actionDist) as Action;
-      const sNext = nextState(state, action, config);
+      const sNext = stochastic
+        ? sampleStochastic(state, action, config, slip)
+        : nextState(state, action, config);
       const r = reward(sNext, config);
       traj.push(sNext);
       msg += ` → ${ACTION_NAMES[action]} → s${sNext + 1}(r=${r})`;
@@ -80,12 +90,15 @@ export default function Chapter01MdpPage() {
     }
     const actionDist = policy[agentState];
     const action = sampleAction(actionDist) as Action;
-    const sNext = nextState(agentState, action, config);
+    const sNext = stochastic
+      ? sampleStochastic(agentState, action, config, slip)
+      : nextState(agentState, action, config);
     const r = reward(sNext, config);
     const newTrajectory = [...trajectory, sNext];
     let msg = `从 s${agentState + 1} ${ACTION_NAMES[action]} 到 s${sNext + 1}，奖励 ${r}`;
     if (isTerminal(sNext, config)) msg += ' [到达目标]';
     else if (config.forbiddenStates.includes(sNext)) msg += ' [进入禁区]';
+    if (stochastic && sNext !== nextState(agentState, action, config)) msg += ' [随机滑移]';
 
     setAgentState(sNext);
     setTrajectory(newTrajectory);
@@ -100,7 +113,9 @@ export default function Chapter01MdpPage() {
 
   function updatePolicy(state: number, action: number) {
     const newPolicy = deterministicPolicy(
-      policy.map((dist, s) => (s === state ? (action as Action) : (dist.indexOf(1) as Action))) as Action[]
+      policy.map((dist, s) =>
+        s === state ? (action as Action) : (dist.indexOf(1) as Action)
+      ) as Action[]
     );
     setPolicy(newPolicy);
   }
@@ -184,8 +199,8 @@ export default function Chapter01MdpPage() {
       </section>
 
       {/* Interactive demo */}
-      <InteractiveDemo title="网格世界交互演示">
-        <div className="grid lg:grid-cols-[1fr_340px] gap-6">
+      <InteractiveDemo title="状态-动作-转移探索器">
+        <div className="grid lg:grid-cols-[1fr_380px] gap-6">
           <div className="flex flex-col items-center justify-center bg-gray-50 rounded-xl p-6 border border-gray-200">
             <GridWorld
               config={config}
@@ -199,7 +214,7 @@ export default function Chapter01MdpPage() {
               className="max-w-full"
             />
             <p className="mt-4 text-sm text-gray-500 text-center">
-              点击网格中的箭头可修改每个状态的策略；使用「单步执行」可逐格观察移动
+              点击网格中的箭头可修改每个状态的策略；点击格子查看转移表
             </p>
           </div>
 
@@ -215,12 +230,112 @@ export default function Chapter01MdpPage() {
                 <div className="text-sm text-gray-700 bg-blue-50 p-3 rounded-lg border border-blue-100">
                   {message}
                 </div>
-                {selectedInfo && (
-                  <div className="text-sm text-gray-600">
-                    选中状态 <strong>s{selectedInfo.state + 1}</strong>：
-                    奖励 {selectedInfo.reward}，
-                    {selectedInfo.terminal ? ' 终止状态' : ' 非终止状态'}
+                {selectedInfo ? (
+                  <div className="text-sm text-gray-600 space-y-1">
+                    <div>
+                      选中状态 <strong>s{selectedInfo.state + 1}</strong>：
+                      {selectedInfo.terminal ? ' 终止状态' : ' 非终止状态'}，状态奖励 {selectedInfo.reward}
+                    </div>
+                    <div>
+                      动作空间：
+                      <KaTeX math={String.raw`\mathcal{A}(s_${selectedInfo.state + 1}) = \{a_1,\dots,a_5\}`} />
+                    </div>
                   </div>
+                ) : (
+                  <div className="text-sm text-gray-500">点击左侧网格中的某个状态查看转移细节。</div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base flex items-center justify-between">
+                  <span>转移表</span>
+                  {selectedInfo && (
+                    <span className="text-xs font-normal text-gray-500">
+                      s{selectedInfo.state + 1}
+                    </span>
+                  )}
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {selectedInfo ? (
+                  <div className="space-y-3">
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm border-collapse">
+                        <thead>
+                          <tr className="border-b border-gray-200 text-gray-600">
+                            <th className="py-1 pr-2 text-left">动作</th>
+                            <th className="py-1 pr-2 text-left">下一状态</th>
+                            <th className="py-1 pr-2 text-left">奖励</th>
+                            {stochastic && <th className="py-1 text-left">概率</th>}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {ACTION_NAMES.map((name, a) => {
+                            const sNext = selectedInfo.transitions[a];
+                            const dist = stochastic
+                              ? stochasticTransition(selectedInfo.state, a as Action, config, slip)
+                              : [{ nextState: sNext, prob: 1 }];
+                            return (
+                              <tr key={a} className="border-b border-gray-100">
+                                <td className="py-1 pr-2">{name}</td>
+                                <td className="py-1 pr-2">
+                                  {stochastic
+                                    ? dist.map((d) => `s${d.nextState + 1}`).join(', ')
+                                    : `s${sNext + 1}`}
+                                </td>
+                                <td className="py-1 pr-2">
+                                  {rewardForAction(selectedInfo.state, a as Action, config)}
+                                </td>
+                                {stochastic && (
+                                  <td className="py-1 text-xs text-gray-600">
+                                    {dist.map((d, i) => (
+                                      <span key={i}>
+                                        s{d.nextState + 1}: {d.prob.toFixed(2)}
+                                        {i < dist.length - 1 ? ', ' : ''}
+                                      </span>
+                                    ))}
+                                  </td>
+                                )}
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div className="flex items-center justify-between pt-2 border-t border-gray-100">
+                      <div className="flex items-center gap-2">
+                        <Shuffle className="w-4 h-4 text-gray-500" />
+                        <span className="text-sm text-gray-700">随机转移</span>
+                      </div>
+                      <Switch
+                        checked={stochastic}
+                        onCheckedChange={setStochastic}
+                        aria-label="切换随机转移"
+                      />
+                    </div>
+                    {stochastic && (
+                      <div className="space-y-2">
+                        <div className="text-sm text-gray-600">
+                          滑移概率（动作以该概率被随机动作替代）
+                        </div>
+                        <Slider
+                          value={[slip]}
+                          min={0.05}
+                          max={0.5}
+                          step={0.05}
+                          onValueChange={([v]) => setSlip(v)}
+                        />
+                        <div className="text-center font-mono text-sm text-gray-700">
+                          slip = {slip.toFixed(2)}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-sm text-gray-500">选择一个状态以查看转移表。</div>
                 )}
               </CardContent>
             </Card>
@@ -285,4 +400,15 @@ function sampleAction(probs: number[]): number {
     if (r <= cum) return i;
   }
   return probs.length - 1;
+}
+
+function sampleStochastic(
+  state: number,
+  action: Action,
+  config: GridWorldConfig,
+  slip: number
+): number {
+  if (Math.random() > slip) return nextState(state, action, config);
+  const randomAction = Math.floor(Math.random() * 5) as Action;
+  return nextState(state, randomAction, config);
 }

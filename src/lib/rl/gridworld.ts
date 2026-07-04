@@ -110,8 +110,64 @@ export function reward(state: number, config: GridWorldConfig): number {
   return config.stepReward;
 }
 
+/**
+ * Reward associated with taking an action at a state: r(s,a) = r(nextState(s,a)).
+ */
+export function rewardForAction(
+  state: number,
+  action: Action,
+  config: GridWorldConfig
+): number {
+  return reward(nextState(state, action, config), config);
+}
+
 export function isTerminal(state: number, config: GridWorldConfig): boolean {
   return state === config.targetState;
+}
+
+/**
+ * Deterministic transition table for a state: list next states for each action.
+ */
+export function transitionTable(state: number, config: GridWorldConfig): number[] {
+  return ACTION_DELTAS.map((_, a) => nextState(state, a as Action, config));
+}
+
+/**
+ * Stochastic transition distribution p(s'|s,a) with slip probability.
+ * With probability (1 - slip) the intended action is executed;
+ * with probability slip a uniformly random action (including the intended one) is executed.
+ */
+export function stochasticTransition(
+  state: number,
+  action: Action,
+  config: GridWorldConfig,
+  slip: number
+): { nextState: number; prob: number }[] {
+  const numActions = ACTION_DELTAS.length;
+  const intended = nextState(state, action, config);
+  const counts = new Map<number, number>();
+  counts.set(intended, 1 - slip);
+  for (let a = 0; a < numActions; a++) {
+    const sNext = nextState(state, a as Action, config);
+    counts.set(sNext, (counts.get(sNext) ?? 0) + slip / numActions);
+  }
+  return Array.from(counts.entries())
+    .map(([nextState, prob]) => ({ nextState, prob }))
+    .sort((a, b) => a.nextState - b.nextState);
+}
+
+/**
+ * Normalize a policy so that probabilities in each state sum to 1.
+ */
+export function normalizePolicy(policy: Policy): Policy {
+  return policy.map((dist) => {
+    const sum = dist.reduce((a, b) => a + b, 0);
+    if (sum === 0) {
+      const uniform = 1 / dist.length;
+      return dist.map(() => uniform);
+    }
+    return dist.map((p) => p / sum);
+  });
 }
 
 /**

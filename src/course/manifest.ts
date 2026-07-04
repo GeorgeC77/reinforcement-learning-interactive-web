@@ -47,6 +47,27 @@ export const courseManifest: Part[] = [
             status: "completed",
             description: "状态、动作、奖励、转移与策略的形式化定义。",
           },
+          {
+            id: "ch01-policy",
+            title: "1.2 策略与轨迹",
+            path: "/ch01/policy",
+            status: "completed",
+            description: "确定性/随机性策略、策略表、轨迹生成与回报。",
+          },
+          {
+            id: "ch01-reward",
+            title: "1.3 奖励设计",
+            path: "/ch01/reward",
+            status: "completed",
+            description: "奖励表、即时奖励陷阱与奖励的相对性。",
+          },
+          {
+            id: "ch01-returns",
+            title: "1.4 回报与马尔可夫性",
+            path: "/ch01/returns",
+            status: "completed",
+            description: "折扣回报、回合/持续任务与马尔可夫性。",
+          },
         ],
       },
       {

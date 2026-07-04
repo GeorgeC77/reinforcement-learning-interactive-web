@@ -5,6 +5,9 @@ import HomePage from './pages/HomePage';
 // Chapter 1: Basic Concepts
 import Chapter01OverviewPage from './pages/chapters/chapter01/OverviewPage';
 import Chapter01MdpPage from './pages/chapters/chapter01/MdpPage';
+import Chapter01PolicyPage from './pages/chapters/chapter01/PolicyPage';
+import Chapter01RewardPage from './pages/chapters/chapter01/RewardPage';
+import Chapter01ReturnsPage from './pages/chapters/chapter01/ReturnsPage';
 
 // Chapter 2: State Values and Bellman Equation
 import Chapter02OverviewPage from './pages/chapters/chapter02/OverviewPage';
@@ -52,6 +55,9 @@ function App() {
           {/* Chapter 1 */}
           <Route path="/ch01/overview" element={<Chapter01OverviewPage />} />
           <Route path="/ch01/mdp" element={<Chapter01MdpPage />} />
+          <Route path="/ch01/policy" element={<Chapter01PolicyPage />} />
+          <Route path="/ch01/reward" element={<Chapter01RewardPage />} />
+          <Route path="/ch01/returns" element={<Chapter01ReturnsPage />} />
 
           {/* Chapter 2 */}
           <Route path="/ch02/overview" element={<Chapter02OverviewPage />} />

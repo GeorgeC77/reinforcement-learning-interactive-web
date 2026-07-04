@@ -1,6 +1,5 @@
 import { Link } from 'react-router-dom';
-import { BookOpen, Grid3x3, ArrowRight, ShieldAlert } from 'lucide-react';
-import ConceptCard from '@/components/ConceptCard';
+import { BookOpen, Grid3x3, ArrowRight, ShieldAlert, Route, Gift, Clock } from 'lucide-react';
 import KaTeX from '@/components/KaTeX';
 
 export default function Chapter01OverviewPage() {
@@ -32,57 +31,66 @@ export default function Chapter01OverviewPage() {
           <Grid3x3 className="w-6 h-6 text-blue-600" />
           本章学习路线
         </h2>
-        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-          <ConceptCard
-            icon={<Grid3x3 className="w-5 h-5" />}
-            title="网格世界例子"
-            description="机器人在网格中移动，目标是到达目标格并避开禁区。"
-          />
-          <ConceptCard
-            icon={<ArrowRight className="w-5 h-5" />}
-            title="状态与动作"
-            description={
-              <>
-                状态空间 <KaTeX math={String.raw`\mathcal{S}`} /> 与动作空间 <KaTeX math={String.raw`\mathcal{A}(s)`} />。
-              </>
-            }
-          />
-          <ConceptCard
-            icon={<ArrowRight className="w-5 h-5" />}
-            title="状态转移"
-            description={
-              <>
-                转移概率 <KaTeX math={String.raw`p(s'|s,a)`} /> 描述环境动态。
-              </>
-            }
-          />
-          <ConceptCard
-            icon={<ArrowRight className="w-5 h-5" />}
-            title="奖励"
-            description={
-              <>
-                即时奖励 <KaTeX math={String.raw`r`} /> 引导智能体行为。
-              </>
-            }
-          />
-          <ConceptCard
-            icon={<ArrowRight className="w-5 h-5" />}
-            title="策略"
-            description={
-              <>
-                策略 <KaTeX math={String.raw`\pi(a|s)`} /> 决定在每个状态采取什么动作。
-              </>
-            }
-          />
-          <ConceptCard
-            icon={<ArrowRight className="w-5 h-5" />}
-            title="回报与 MDP"
-            description={
-              <>
-                折扣回报 <KaTeX math={String.raw`G_t`} /> 与马尔可夫决策过程。
-              </>
-            }
-          />
+        <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <Link
+            to="/ch01/mdp"
+            className="group block bg-gray-50 hover:bg-blue-50 border border-gray-200 hover:border-blue-200 rounded-xl p-5 transition-colors"
+          >
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center group-hover:bg-blue-200 transition-colors">
+                <Grid3x3 className="w-5 h-5 text-blue-600" />
+              </div>
+              <h3 className="font-semibold text-gray-900">状态-动作-转移</h3>
+            </div>
+            <p className="text-sm text-gray-600">
+              认识状态空间、动作空间、确定性/随机性转移 <KaTeX math={String.raw`p(s'|s,a)`} />。
+            </p>
+          </Link>
+
+          <Link
+            to="/ch01/policy"
+            className="group block bg-gray-50 hover:bg-indigo-50 border border-gray-200 hover:border-indigo-200 rounded-xl p-5 transition-colors"
+          >
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 bg-indigo-100 rounded-lg flex items-center justify-center group-hover:bg-indigo-200 transition-colors">
+                <Route className="w-5 h-5 text-indigo-600" />
+              </div>
+              <h3 className="font-semibold text-gray-900">策略与轨迹</h3>
+            </div>
+            <p className="text-sm text-gray-600">
+              确定性/随机性策略、策略表，以及按策略生成的轨迹与回报。
+            </p>
+          </Link>
+
+          <Link
+            to="/ch01/reward"
+            className="group block bg-gray-50 hover:bg-rose-50 border border-gray-200 hover:border-rose-200 rounded-xl p-5 transition-colors"
+          >
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 bg-rose-100 rounded-lg flex items-center justify-center group-hover:bg-rose-200 transition-colors">
+                <Gift className="w-5 h-5 text-rose-600" />
+              </div>
+              <h3 className="font-semibold text-gray-900">奖励设计</h3>
+            </div>
+            <p className="text-sm text-gray-600">
+              奖励表、即时奖励陷阱，以及奖励的相对性与仿射不变性。
+            </p>
+          </Link>
+
+          <Link
+            to="/ch01/returns"
+            className="group block bg-gray-50 hover:bg-emerald-50 border border-gray-200 hover:border-emerald-200 rounded-xl p-5 transition-colors"
+          >
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 bg-emerald-100 rounded-lg flex items-center justify-center group-hover:bg-emerald-200 transition-colors">
+                <Clock className="w-5 h-5 text-emerald-600" />
+              </div>
+              <h3 className="font-semibold text-gray-900">回报与马尔可夫性</h3>
+            </div>
+            <p className="text-sm text-gray-600">
+              折扣回报、回合/持续任务、无限几何级数与马尔可夫性小测验。
+            </p>
+          </Link>
         </div>
       </section>
 
@@ -106,12 +114,33 @@ export default function Chapter01OverviewPage() {
       </section>
 
       {/* Next section CTA */}
-      <section className="flex justify-end">
+      <section className="flex flex-wrap justify-end gap-3">
         <Link
           to="/ch01/mdp"
-          className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors"
+          className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors"
         >
-          进入马尔可夫决策过程交互演示
+          状态-动作-转移
+          <ArrowRight className="w-4 h-4" />
+        </Link>
+        <Link
+          to="/ch01/policy"
+          className="inline-flex items-center gap-2 px-5 py-2.5 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 transition-colors"
+        >
+          策略与轨迹
+          <ArrowRight className="w-4 h-4" />
+        </Link>
+        <Link
+          to="/ch01/reward"
+          className="inline-flex items-center gap-2 px-5 py-2.5 bg-rose-600 text-white rounded-lg font-medium hover:bg-rose-700 transition-colors"
+        >
+          奖励设计
+          <ArrowRight className="w-4 h-4" />
+        </Link>
+        <Link
+          to="/ch01/returns"
+          className="inline-flex items-center gap-2 px-5 py-2.5 bg-emerald-600 text-white rounded-lg font-medium hover:bg-emerald-700 transition-colors"
+        >
+          回报与马尔可夫性
           <ArrowRight className="w-4 h-4" />
         </Link>
       </section>

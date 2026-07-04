@@ -16,6 +16,8 @@ import {
   Brain,
   GitBranch,
   Activity,
+  Route,
+  Gift,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -48,7 +50,10 @@ type ChapterKey =
 
 const chapter01Items: NavItem[] = [
   { to: '/ch01/overview', label: '课程概览', icon: BookOpen },
-  { to: '/ch01/mdp', label: 'MDP', icon: Grid3x3 },
+  { to: '/ch01/mdp', label: '状态-动作-转移', icon: Grid3x3 },
+  { to: '/ch01/policy', label: '策略与轨迹', icon: Route },
+  { to: '/ch01/reward', label: '奖励设计', icon: Gift },
+  { to: '/ch01/returns', label: '回报与马尔可夫性', icon: Clock },
 ];
 
 const chapter02Items: NavItem[] = [
