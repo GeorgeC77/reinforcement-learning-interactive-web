@@ -15,7 +15,7 @@ import {
   type Policy,
   type GridWorldConfig,
   deterministicPolicy,
-  nextState,
+  step,
   reward,
   rewardForAction,
   isTerminal,
@@ -53,14 +53,15 @@ export default function Chapter01MdpPage() {
     let msg = `从 s${state + 1} 出发`;
     let reachedTerminal = false;
 
-    for (let step = 0; step < MAX_EPISODE_STEPS; step++) {
+    for (let stepIdx = 0; stepIdx < MAX_EPISODE_STEPS; stepIdx++) {
       if (isTerminal(state, config)) break;
       const actionDist = policy[state];
       const action = sampleAction(actionDist) as Action;
-      const sNext = stochastic
+      const result = stochastic
         ? sampleStochastic(state, action, config, slip)
-        : nextState(state, action, config);
-      const r = reward(sNext, config);
+        : step(state, action, config);
+      const sNext = result.nextState;
+      const r = result.reward;
       traj.push(sNext);
       msg += ` → ${ACTION_NAMES[action]} → s${sNext + 1}(r=${r})`;
       state = sNext;
@@ -90,15 +91,17 @@ export default function Chapter01MdpPage() {
     }
     const actionDist = policy[agentState];
     const action = sampleAction(actionDist) as Action;
-    const sNext = stochastic
+    const intended = step(agentState, action, config);
+    const result = stochastic
       ? sampleStochastic(agentState, action, config, slip)
-      : nextState(agentState, action, config);
-    const r = reward(sNext, config);
+      : intended;
+    const sNext = result.nextState;
+    const r = result.reward;
     const newTrajectory = [...trajectory, sNext];
     let msg = `从 s${agentState + 1} ${ACTION_NAMES[action]} 到 s${sNext + 1}，奖励 ${r}`;
     if (isTerminal(sNext, config)) msg += ' [到达目标]';
     else if (config.forbiddenStates.includes(sNext)) msg += ' [进入禁区]';
-    if (stochastic && sNext !== nextState(agentState, action, config)) msg += ' [随机滑移]';
+    if (stochastic && sNext !== intended.nextState) msg += ' [随机滑移]';
 
     setAgentState(sNext);
     setTrajectory(newTrajectory);
@@ -407,8 +410,8 @@ function sampleStochastic(
   action: Action,
   config: GridWorldConfig,
   slip: number
-): number {
-  if (Math.random() > slip) return nextState(state, action, config);
+): ReturnType<typeof step> {
+  if (Math.random() > slip) return step(state, action, config);
   const randomAction = Math.floor(Math.random() * 5) as Action;
-  return nextState(state, randomAction, config);
+  return step(state, randomAction, config);
 }

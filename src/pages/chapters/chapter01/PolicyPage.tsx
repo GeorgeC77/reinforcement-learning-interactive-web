@@ -15,8 +15,7 @@ import {
   type Action,
   type Policy,
   deterministicPolicy,
-  nextState,
-  reward,
+  step,
   isTerminal,
   discountedReturn,
 } from '@/lib/rl/gridworld';
@@ -101,14 +100,13 @@ export default function Chapter01PolicyPage() {
     const traj: { state: number; action: Action; reward: number; nextState: number }[] = [];
     const maxSteps = 15;
 
-    for (let step = 0; step < maxSteps; step++) {
+    for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
       if (isTerminal(state, config)) break;
       const action = sampleAction(policy[state]) as Action;
-      const sNext = nextState(state, action, config);
-      const r = reward(sNext, config);
-      traj.push({ state, action, reward: r, nextState: sNext });
-      state = sNext;
-      if (isTerminal(state, config)) break;
+      const result = step(state, action, config);
+      traj.push({ state, action, reward: result.reward, nextState: result.nextState });
+      state = result.nextState;
+      if (result.done || isTerminal(state, config)) break;
     }
 
     setTrajectory(traj);

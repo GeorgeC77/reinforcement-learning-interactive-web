@@ -1,32 +1,56 @@
 /**
- * GridWorld environment and RL utilities.
+ * Unified GridWorld environment and RL utilities.
  *
- * The book uses a 3x3 grid world as the running example for Chapter 1-2:
- *   s1 s2 s3
- *   s4 s5 s6
- *   s7 s8 s9
+ * Reference: Shiyu Zhao, "Mathematical Foundations of Reinforcement Learning"
  *
- * Default layout:
- *   - Start:    s1
- *   - Target:   s9  (reward +1)
- *   - Forbidden: s3, s5 (reward -1)
- *   - Boundary collision: reward -1, stay in place
- *   - Step: reward 0
+ * Default 3x3 layout (row-major indices):
+ *   s1(0) s2(1) s3(2)
+ *   s4(3) s5(4) s6(5)
+ *   s7(6) s8(7) s9(8)
+ *
+ * Textbook default environment:
+ *   - targetState:    s9  (index 8)
+ *   - forbiddenStates: s6, s7 (indices [5, 6])
+ *   - boundaryReward: -1
+ *   - forbiddenReward: -1
+ *   - targetReward:   +1
+ *   - stepReward:     0
+ *   - gamma:          0.9
+ *   - taskType:       'continuing' for Chapters 1-4
+ *
+ * All algorithms in this file operate on the same `step()` function so that
+ * boundary rewards, forbidden rewards, target rewards and episode termination
+ * are handled consistently.
  */
 
 export type Action = 0 | 1 | 2 | 3 | 4;
 export type StateIdx = number;
+export type TaskType = 'continuing' | 'episodic';
+
 export const ACTION_NAMES = ['上', '右', '下', '左', '停留'] as const;
 export const ACTION_DELTAS: { dr: number; dc: number }[] = [
-  { dr: -1, dc: 0 }, // up
-  { dr: 0, dc: 1 },  // right
-  { dr: 1, dc: 0 },  // down
-  { dr: 0, dc: -1 }, // left
-  { dr: 0, dc: 0 },  // stay
+  { dr: -1, dc: 0 }, // up    (a1)
+  { dr: 0, dc: 1 },  // right (a2)
+  { dr: 1, dc: 0 },  // down  (a3)
+  { dr: 0, dc: -1 }, // left  (a4)
+  { dr: 0, dc: 0 },  // stay  (a5)
 ];
 
 export type Policy = number[][]; // policy[s][a] = probability
 export type StateValues = number[];
+
+export interface StepResult {
+  nextState: number;
+  reward: number;
+  done: boolean;
+  info: {
+    hitBoundary: boolean;
+    enteredForbidden: boolean;
+    reachedTarget: boolean;
+    actionName: string;
+    transitionText: string;
+  };
+}
 
 export interface GridWorldConfig {
   rows: number;
@@ -39,6 +63,7 @@ export interface GridWorldConfig {
   boundaryReward: number;
   stepReward: number;
   gamma: number;
+  taskType: TaskType;
 }
 
 export const DEFAULT_CONFIG: GridWorldConfig = {
@@ -46,15 +71,16 @@ export const DEFAULT_CONFIG: GridWorldConfig = {
   cols: 3,
   startState: 0,
   targetState: 8,
-  forbiddenStates: [2, 4],
+  forbiddenStates: [5, 6], // s6 and s7 as in the textbook
   targetReward: 1,
   forbiddenReward: -1,
   boundaryReward: -1,
   stepReward: 0,
   gamma: 0.9,
+  taskType: 'continuing',
 };
 
-/** GridWorld with mild boundary penalty (for illustrating policy factors). */
+/** A milder boundary penalty useful for visualising policy trade-offs. */
 export const MILD_BOUNDARY_CONFIG: GridWorldConfig = {
   ...DEFAULT_CONFIG,
   boundaryReward: -0.3,
@@ -67,16 +93,26 @@ export const CENTER_TARGET_CONFIG: GridWorldConfig = {
   forbiddenStates: [2],
 };
 
-/** GridWorld with high discount factor (far-sighted policies). */
+/** High discount factor (far-sighted policies). */
 export const FAR_SIGHTED_CONFIG: GridWorldConfig = {
   ...DEFAULT_CONFIG,
   gamma: 0.99,
 };
 
-/** GridWorld with low discount factor (short-sighted policies). */
+/** Low discount factor (short-sighted policies). */
 export const SHORT_SIGHTED_CONFIG: GridWorldConfig = {
   ...DEFAULT_CONFIG,
   gamma: 0.3,
+};
+
+/** Episodic task configuration often used in path-finding / TD chapters. */
+export const EPISODIC_PATH_CONFIG: GridWorldConfig = {
+  ...DEFAULT_CONFIG,
+  targetReward: 0,
+  forbiddenReward: -10,
+  boundaryReward: -10,
+  stepReward: -1,
+  taskType: 'episodic',
 };
 
 export function stateToRowCol(state: number, cols: number): { row: number; col: number } {
@@ -87,6 +123,11 @@ export function rowColToState(row: number, col: number, cols: number): number {
   return row * cols + col;
 }
 
+/**
+ * Intended next state under deterministic dynamics (boundary bounce-back).
+ * Prefer `step()` for the complete transition because it returns the correct
+ * boundary reward.
+ */
 export function nextState(state: number, action: Action, config: GridWorldConfig): number {
   const { row, col } = stateToRowCol(state, config.cols);
   const delta = ACTION_DELTAS[action];
@@ -104,6 +145,65 @@ export function nextState(state: number, action: Action, config: GridWorldConfig
   return rowColToState(newRow, newCol, config.cols);
 }
 
+/**
+ * Unified environment step. This is the single source of truth for transitions
+ * and rewards used by all algorithms and UI components.
+ */
+export function step(
+  state: number,
+  action: Action,
+  config: GridWorldConfig
+): StepResult {
+  const { row, col } = stateToRowCol(state, config.cols);
+  const delta = ACTION_DELTAS[action];
+  const newRow = row + delta.dr;
+  const newCol = col + delta.dc;
+
+  const hitBoundary =
+    newRow < 0 ||
+    newRow >= config.rows ||
+    newCol < 0 ||
+    newCol >= config.cols;
+
+  const nextState = hitBoundary ? state : rowColToState(newRow, newCol, config.cols);
+  const reachedTarget = !hitBoundary && nextState === config.targetState;
+  const enteredForbidden = !hitBoundary && config.forbiddenStates.includes(nextState);
+
+  let reward: number;
+  if (hitBoundary) {
+    reward = config.boundaryReward;
+  } else if (nextState === config.targetState) {
+    reward = config.targetReward;
+  } else if (config.forbiddenStates.includes(nextState)) {
+    reward = config.forbiddenReward;
+  } else {
+    reward = config.stepReward;
+  }
+
+  const done = config.taskType === 'episodic' && reachedTarget;
+  const actionName = ACTION_NAMES[action];
+  const transitionText = hitBoundary
+    ? `s${state + 1} --${actionName}--> 撞边界，停留在 s${state + 1}，奖励 ${reward}`
+    : `s${state + 1} --${actionName}--> s${nextState + 1}，奖励 ${reward}`;
+
+  return {
+    nextState,
+    reward,
+    done,
+    info: {
+      hitBoundary,
+      enteredForbidden,
+      reachedTarget,
+      actionName,
+      transitionText,
+    },
+  };
+}
+
+/**
+ * State-based reward r(s) used for colouring cells. It does NOT include the
+ * boundary reward because boundary is an action effect, not a state property.
+ */
 export function reward(state: number, config: GridWorldConfig): number {
   if (state === config.targetState) return config.targetReward;
   if (config.forbiddenStates.includes(state)) return config.forbiddenReward;
@@ -111,25 +211,29 @@ export function reward(state: number, config: GridWorldConfig): number {
 }
 
 /**
- * Reward associated with taking an action at a state: r(s,a) = r(nextState(s,a)).
+ * Reward associated with taking an action at a state: r(s,a).
+ * This correctly returns boundaryReward when the action attempts to leave the grid.
  */
 export function rewardForAction(
   state: number,
   action: Action,
   config: GridWorldConfig
 ): number {
-  return reward(nextState(state, action, config), config);
-}
-
-export function isTerminal(state: number, config: GridWorldConfig): boolean {
-  return state === config.targetState;
+  return step(state, action, config).reward;
 }
 
 /**
  * Deterministic transition table for a state: list next states for each action.
  */
 export function transitionTable(state: number, config: GridWorldConfig): number[] {
-  return ACTION_DELTAS.map((_, a) => nextState(state, a as Action, config));
+  return ACTION_DELTAS.map((_, a) => step(state, a as Action, config).nextState);
+}
+
+/**
+ * Terminal test. In continuing tasks the target is a normal state.
+ */
+export function isTerminal(state: number, config: GridWorldConfig): boolean {
+  return config.taskType === 'episodic' && state === config.targetState;
 }
 
 /**
@@ -144,30 +248,16 @@ export function stochasticTransition(
   slip: number
 ): { nextState: number; prob: number }[] {
   const numActions = ACTION_DELTAS.length;
-  const intended = nextState(state, action, config);
+  const intended = step(state, action, config).nextState;
   const counts = new Map<number, number>();
   counts.set(intended, 1 - slip);
   for (let a = 0; a < numActions; a++) {
-    const sNext = nextState(state, a as Action, config);
+    const sNext = step(state, a as Action, config).nextState;
     counts.set(sNext, (counts.get(sNext) ?? 0) + slip / numActions);
   }
   return Array.from(counts.entries())
     .map(([nextState, prob]) => ({ nextState, prob }))
     .sort((a, b) => a.nextState - b.nextState);
-}
-
-/**
- * Normalize a policy so that probabilities in each state sum to 1.
- */
-export function normalizePolicy(policy: Policy): Policy {
-  return policy.map((dist) => {
-    const sum = dist.reduce((a, b) => a + b, 0);
-    if (sum === 0) {
-      const uniform = 1 / dist.length;
-      return dist.map(() => uniform);
-    }
-    return dist.map((p) => p / sum);
-  });
 }
 
 /**
@@ -195,12 +285,33 @@ export function randomPolicy(numStates: number, numActions: number = 5): Policy 
 }
 
 /**
- * Compute the Bellman equation for a given policy:
- *   v = r_pi + gamma * P_pi * v
- * where r_pi[s] = sum_a pi(a|s) * r(s,a)
- * and   P_pi[s,s'] = sum_a pi(a|s) * p(s'|s,a).
- *
- * For our deterministic grid world, p(s'|s,a) = 1 iff s' = nextState(s,a).
+ * Normalize a policy so that probabilities in each state sum to 1.
+ */
+export function normalizePolicy(policy: Policy): Policy {
+  return policy.map((dist) => {
+    const sum = dist.reduce((a, b) => a + b, 0);
+    if (sum === 0) {
+      const uniform = 1 / dist.length;
+      return dist.map(() => uniform);
+    }
+    return dist.map((p) => p / sum);
+  });
+}
+
+function sampleAction(probs: number[]): Action {
+  const r = Math.random();
+  let cum = 0;
+  for (let i = 0; i < probs.length; i++) {
+    cum += probs[i];
+    if (r <= cum) return i as Action;
+  }
+  return (probs.length - 1) as Action;
+}
+
+/**
+ * Compute the Bellman components for a given policy using the unified step().
+ *   r_pi[s] = sum_a pi(a|s) * r(s,a)
+ *   P_pi[s,s'] = sum_a pi(a|s) * p(s'|s,a)
  */
 export function computeBellmanComponents(
   policy: Policy,
@@ -214,10 +325,9 @@ export function computeBellmanComponents(
     for (let a = 0; a < 5; a++) {
       const prob = policy[s][a];
       if (prob === 0) continue;
-      const sNext = nextState(s, a as Action, config);
-      const r = reward(sNext, config);
-      rPi[s] += prob * r;
-      pPi[s][sNext] += prob;
+      const result = step(s, a as Action, config);
+      rPi[s] += prob * result.reward;
+      pPi[s][result.nextState] += prob;
     }
   }
 
@@ -255,44 +365,16 @@ export function computeBellmanBackup(
 }
 
 /**
- * Estimate the state value of a start state by Monte Carlo sample averages.
- * Returns the history of estimates after each episode.
- */
-export function estimateStateValueMC(
-  startState: number,
-  policy: Policy,
-  config: GridWorldConfig,
-  numEpisodes: number,
-  maxSteps: number = 30
-): { estimates: number[]; returns: number[] } {
-  const estimates: number[] = [];
-  const returns: number[] = [];
-  let sum = 0;
-
-  for (let ep = 0; ep < numEpisodes; ep++) {
-    const traj = generateTrajectory(startState, policy, config, maxSteps);
-    const g = discountedReturn(traj, config.gamma);
-    sum += g;
-    returns.push(g);
-    estimates.push(sum / (ep + 1));
-  }
-
-  return { estimates, returns };
-}
-
-/**
  * Solve state values exactly: v = (I - gamma * P_pi)^{-1} * r_pi.
  */
 export function solveStateValues(policy: Policy, config: GridWorldConfig): StateValues {
   const numStates = config.rows * config.cols;
   const { rPi, pPi } = computeBellmanComponents(policy, config);
 
-  // Build A = I - gamma * P_pi
   const A: number[][] = Array.from({ length: numStates }, (_, i) =>
     Array.from({ length: numStates }, (_, j) => (i === j ? 1 : 0) - config.gamma * pPi[i][j])
   );
 
-  // Gaussian elimination to solve A x = b
   return solveLinearSystem(A, rPi);
 }
 
@@ -301,7 +383,6 @@ function solveLinearSystem(A: number[][], b: number[]): number[] {
   const M: number[][] = A.map((row, i) => [...row, b[i]]);
 
   for (let i = 0; i < n; i++) {
-    // Partial pivoting
     let maxRow = i;
     for (let k = i + 1; k < n; k++) {
       if (Math.abs(M[k][i]) > Math.abs(M[maxRow][i])) maxRow = k;
@@ -368,27 +449,16 @@ export function generateTrajectory(
   const traj: { state: number; action: Action; reward: number; nextState: number }[] = [];
   let state = startState;
 
-  for (let step = 0; step < maxSteps; step++) {
+  for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
     if (isTerminal(state, config)) break;
-    const action = step === 0 && startAction !== undefined ? startAction : sampleAction(policy[state]);
-    const sNext = nextState(state, action, config);
-    const r = reward(sNext, config);
-    traj.push({ state, action, reward: r, nextState: sNext });
-    state = sNext;
-    if (isTerminal(state, config)) break;
+    const action = stepIdx === 0 && startAction !== undefined ? startAction : sampleAction(policy[state]);
+    const result = step(state, action, config);
+    traj.push({ state, action, reward: result.reward, nextState: result.nextState });
+    state = result.nextState;
+    if (result.done) break;
   }
 
   return traj;
-}
-
-function sampleAction(probs: number[]): Action {
-  const r = Math.random();
-  let cum = 0;
-  for (let i = 0; i < probs.length; i++) {
-    cum += probs[i];
-    if (r <= cum) return i as Action;
-  }
-  return (probs.length - 1) as Action;
 }
 
 /**
@@ -407,7 +477,7 @@ export function discountedReturn(
 
 /**
  * Compute action-value function q(s,a) given state values v and environment model.
- * q(s,a) = sum_{s'} p(s'|s,a) [r(s') + gamma * v(s')]
+ * q(s,a) = r(s,a) + gamma * v(s')
  */
 export function computeQValues(
   values: StateValues,
@@ -418,9 +488,8 @@ export function computeQValues(
 
   for (let s = 0; s < numStates; s++) {
     for (let a = 0; a < 5; a++) {
-      const sNext = nextState(s, a as Action, config);
-      const r = reward(sNext, config);
-      q[s][a] = r + config.gamma * values[sNext];
+      const result = step(s, a as Action, config);
+      q[s][a] = result.reward + config.gamma * values[result.nextState];
     }
   }
 
@@ -490,7 +559,6 @@ export function policyIteration(
   let prevValues: StateValues | null = null;
 
   for (let k = 0; k < maxIterations; k++) {
-    // Policy evaluation (iterative, so we can also do truncated evaluation)
     const vHistory = iterateStateValues(policy, config, evalIterations, null);
     const v = vHistory[vHistory.length - 1];
 
@@ -501,7 +569,6 @@ export function policyIteration(
     prevValues = v;
     values.push(v);
 
-    // Policy improvement
     const q = computeQValues(v, config);
     const newPolicy = greedyPolicy(q);
 
@@ -586,23 +653,47 @@ function generateTrajectoryFrom(
   maxSteps: number
 ): { reward: number }[] {
   const traj: { reward: number }[] = [];
-  let state = nextState(startState, startAction, config);
-  let r = reward(state, config);
-  traj.push({ reward: r });
+  const first = step(startState, startAction, config);
+  traj.push({ reward: first.reward });
+  let state = first.nextState;
 
-  for (let step = 0; step < maxSteps; step++) {
+  for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
     if (isTerminal(state, config)) break;
     const action = sampleAction(policy[state]);
-    const sNext = nextState(state, action, config);
-    r = reward(sNext, config);
-    traj.push({ reward: r });
-    state = sNext;
-    if (isTerminal(state, config)) break;
+    const result = step(state, action, config);
+    traj.push({ reward: result.reward });
+    state = result.nextState;
+    if (result.done) break;
   }
 
   return traj;
 }
 
+/**
+ * Estimate the state value of a start state by Monte Carlo sample averages.
+ * Returns the history of estimates after each episode.
+ */
+export function estimateStateValueMC(
+  startState: number,
+  policy: Policy,
+  config: GridWorldConfig,
+  numEpisodes: number,
+  maxSteps: number = 30
+): { estimates: number[]; returns: number[] } {
+  const estimates: number[] = [];
+  const returns: number[] = [];
+  let sum = 0;
+
+  for (let ep = 0; ep < numEpisodes; ep++) {
+    const traj = generateTrajectory(startState, policy, config, maxSteps);
+    const g = discountedReturn(traj, config.gamma);
+    sum += g;
+    returns.push(g);
+    estimates.push(sum / (ep + 1));
+  }
+
+  return { estimates, returns };
+}
 
 /**
  * TD(0) prediction: estimate state values for a given policy.
@@ -621,14 +712,14 @@ export function tdZeroPrediction(
 
   for (let ep = 0; ep < episodes; ep++) {
     let state = config.startState;
-    for (let step = 0; step < maxSteps; step++) {
+    for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
       if (isTerminal(state, config)) break;
       const action = sampleAction(policy[state]);
-      const sNext = nextState(state, action, config);
-      const r = reward(sNext, config);
-      const tdTarget = r + config.gamma * v[sNext];
+      const result = step(state, action, config);
+      const tdTarget = result.reward + config.gamma * v[result.nextState];
       v[state] += alpha * (tdTarget - v[state]);
-      state = sNext;
+      state = result.nextState;
+      if (result.done) break;
     }
     history.push(v.map((x) => x));
   }
@@ -657,16 +748,16 @@ export function sarsa(
     let policy = epsilonGreedyPolicy(q, epsilon);
     let action = sampleAction(policy[state]);
 
-    for (let step = 0; step < maxSteps; step++) {
+    for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
       if (isTerminal(state, config)) break;
-      const sNext = nextState(state, action, config);
-      const r = reward(sNext, config);
+      const result = step(state, action, config);
       policy = epsilonGreedyPolicy(q, epsilon);
-      const aNext = sampleAction(policy[sNext]);
-      const tdTarget = r + config.gamma * q[sNext][aNext];
+      const aNext = sampleAction(policy[result.nextState]);
+      const tdTarget = result.reward + config.gamma * q[result.nextState][aNext];
       q[state][action] += alpha * (tdTarget - q[state][action]);
-      state = sNext;
+      state = result.nextState;
       action = aNext;
+      if (result.done) break;
     }
     history.push(q.map((row) => [...row]));
   }
@@ -692,17 +783,90 @@ export function qLearning(
 
   for (let ep = 0; ep < episodes; ep++) {
     let state = config.startState;
-    for (let step = 0; step < maxSteps; step++) {
+    for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
       if (isTerminal(state, config)) break;
       const policy = epsilonGreedyPolicy(q, epsilon);
       const action = sampleAction(policy[state]);
-      const sNext = nextState(state, action, config);
-      const r = reward(sNext, config);
-      const maxQNext = Math.max(...q[sNext]);
-      const tdTarget = r + config.gamma * maxQNext;
+      const result = step(state, action, config);
+      const maxQNext = Math.max(...q[result.nextState]);
+      const tdTarget = result.reward + config.gamma * maxQNext;
       q[state][action] += alpha * (tdTarget - q[state][action]);
-      state = sNext;
+      state = result.nextState;
+      if (result.done) break;
     }
+    history.push(q.map((row) => [...row]));
+  }
+
+  return history;
+}
+
+/**
+ * n-step Sarsa: on-policy TD control with n-step returns.
+ * Returns history of Q-values (one entry per episode).
+ */
+export function nStepSarsa(
+  config: GridWorldConfig,
+  alpha: number = 0.1,
+  epsilon: number = 0.3,
+  n: number = 3,
+  episodes: number = 200,
+  maxSteps: number = 30
+): number[][][] {
+  const numStates = config.rows * config.cols;
+  const numActions = 5;
+  let q = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
+  const history: number[][][] = [q.map((row) => [...row])];
+
+  for (let ep = 0; ep < episodes; ep++) {
+    let state = config.startState;
+    const states: number[] = [state];
+    const actions: Action[] = [];
+    const rewards: number[] = [0];
+
+    let policy = epsilonGreedyPolicy(q, epsilon);
+    let action = sampleAction(policy[state]);
+    actions.push(action);
+
+    let t = 0;
+    let T = Infinity;
+
+    while (true) {
+      if (t < T) {
+        if (isTerminal(state, config)) {
+          T = t;
+        } else {
+          const result = step(state, action, config);
+          states.push(result.nextState);
+          rewards.push(result.reward);
+          policy = epsilonGreedyPolicy(q, epsilon);
+          const aNext = sampleAction(policy[result.nextState]);
+          actions.push(aNext);
+          if (result.done) T = t + 1;
+        }
+      }
+
+      const tau = t - n + 1;
+      if (tau >= 0) {
+        let G = 0;
+        for (let i = tau + 1; i <= Math.min(tau + n, T); i++) {
+          G += Math.pow(config.gamma, i - tau - 1) * rewards[i];
+        }
+        if (tau + n < T) {
+          G += Math.pow(config.gamma, n) * q[states[tau + n]][actions[tau + n]];
+        }
+        const sTau = states[tau];
+        const aTau = actions[tau];
+        q[sTau][aTau] += alpha * (G - q[sTau][aTau]);
+      }
+
+      if (tau === T - 1) break;
+
+      state = states[t + 1];
+      action = actions[t + 1];
+      t++;
+      if (t > maxSteps) break;
+    }
+
     history.push(q.map((row) => [...row]));
   }
 
@@ -730,7 +894,6 @@ export function sgdQuadratic(
   }
   return history;
 }
-
 
 /**
  * Softmax policy from action preferences.
@@ -765,7 +928,6 @@ export function reinforceBandit(
   for (let ep = 0; ep < episodes; ep++) {
     const policy = softmaxPolicy(theta);
     const action = sampleAction(policy);
-    // Deterministic expected reward for this simple demo
     const r = actionRewards[action] + (Math.random() * 2 - 1) * 0.5;
     rewardHistory.push(r);
 
@@ -782,61 +944,49 @@ export function reinforceBandit(
 }
 
 /**
- * Actor-Critic for the GridWorld.
- * Actor uses softmax action preferences H[s][a].
- * Critic estimates state values v[s].
- * Returns histories of values, policies, and episode total rewards.
+ * REINFORCE with baseline for a multi-armed bandit.
+ * baseline is updated incrementally.
  */
-export function actorCritic(
-  config: GridWorldConfig,
-  actorAlpha: number = 0.05,
-  criticAlpha: number = 0.1,
-  episodes: number = 200,
-  maxSteps: number = 30
-): { values: StateValues[]; policies: Policy[]; rewardHistory: number[] } {
-  const numStates = config.rows * config.cols;
-  const numActions = 5;
-  let h = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
-  let v = new Array(numStates).fill(0);
-
-  const values: StateValues[] = [v.map((x) => x)];
-  const policies: Policy[] = [h.map((row) => softmaxPolicy(row))];
-  const rewardHistory: number[] = [0];
+export function reinforceWithBaseline(
+  actionRewards: number[],
+  initialTheta: number[],
+  alpha: number,
+  beta: number,
+  episodes: number
+): {
+  thetaHistory: number[][];
+  policyHistory: number[][];
+  rewardHistory: number[];
+  baselineHistory: number[];
+} {
+  const theta = [...initialTheta];
+  let baseline = 0;
+  const thetaHistory: number[][] = [[...theta]];
+  const policyHistory: number[][] = [softmaxPolicy(theta)];
+  const rewardHistory: number[] = [];
+  const baselineHistory: number[] = [baseline];
 
   for (let ep = 0; ep < episodes; ep++) {
-    let state = config.startState;
-    let episodeReward = 0;
+    const policy = softmaxPolicy(theta);
+    const action = sampleAction(policy);
+    const r = actionRewards[action] + (Math.random() * 2 - 1) * 0.5;
+    rewardHistory.push(r);
 
-    for (let step = 0; step < maxSteps; step++) {
-      if (isTerminal(state, config)) break;
-      const policy = softmaxPolicy(h[state]);
-      const action = sampleAction(policy);
-      const sNext = nextState(state, action as Action, config);
-      const r = reward(sNext, config);
-      episodeReward += r;
+    baseline += beta * (r - baseline);
+    baselineHistory.push(baseline);
 
-      const tdError = r + config.gamma * v[sNext] - v[state];
-
-      // Critic update
-      v[state] += criticAlpha * tdError;
-
-      // Actor update
-      for (let a = 0; a < numActions; a++) {
-        const indicator = a === action ? 1 : 0;
-        h[state][a] += actorAlpha * tdError * (indicator - policy[a]);
-      }
-
-      state = sNext;
+    const advantage = r - baseline;
+    for (let a = 0; a < theta.length; a++) {
+      const indicator = a === action ? 1 : 0;
+      theta[a] += alpha * advantage * (indicator - policy[a]);
     }
 
-    values.push(v.map((x) => x));
-    policies.push(h.map((row) => softmaxPolicy(row)));
-    rewardHistory.push(episodeReward);
+    thetaHistory.push([...theta]);
+    policyHistory.push(softmaxPolicy(theta));
   }
 
-  return { values, policies, rewardHistory };
+  return { thetaHistory, policyHistory, rewardHistory, baselineHistory };
 }
-
 
 /**
  * Mean estimation by sample average (motivating example for MC and SA).
@@ -931,7 +1081,6 @@ export function mcBasic(
     Array.from({ length: numActions }, () => [])
   );
 
-  // Use a uniform random behavior policy for generating episodes
   const behaviorPolicy = randomPolicy(numStates, numActions);
 
   for (let s = 0; s < numStates; s++) {
@@ -956,119 +1105,149 @@ export function mcBasic(
 }
 
 /**
- * n-step Sarsa: on-policy TD control with n-step returns.
- * Returns history of Q-values (one entry per episode).
+ * Actor-Critic for the GridWorld.
+ * Actor uses softmax action preferences H[s][a].
+ * Critic estimates state values v[s].
+ * Returns histories of values, policies, and episode total rewards.
  */
-export function nStepSarsa(
+export function actorCritic(
   config: GridWorldConfig,
-  alpha: number = 0.1,
-  epsilon: number = 0.3,
-  n: number = 3,
+  actorAlpha: number = 0.05,
+  criticAlpha: number = 0.1,
   episodes: number = 200,
   maxSteps: number = 30
-): number[][][] {
+): { values: StateValues[]; policies: Policy[]; rewardHistory: number[] } {
   const numStates = config.rows * config.cols;
   const numActions = 5;
-  let q = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
-  const history: number[][][] = [q.map((row) => [...row])];
+  let h = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
+  let v = new Array(numStates).fill(0);
+
+  const values: StateValues[] = [v.map((x) => x)];
+  const policies: Policy[] = [h.map((row) => softmaxPolicy(row))];
+  const rewardHistory: number[] = [0];
 
   for (let ep = 0; ep < episodes; ep++) {
     let state = config.startState;
-    const states: number[] = [state];
-    const actions: Action[] = [];
-    const rewards: number[] = [0];
+    let episodeReward = 0;
 
-    let policy = epsilonGreedyPolicy(q, epsilon);
-    let action = sampleAction(policy[state]);
-    actions.push(action);
+    for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
+      if (isTerminal(state, config)) break;
+      const policy = softmaxPolicy(h[state]);
+      const action = sampleAction(policy);
+      const result = step(state, action as Action, config);
+      episodeReward += result.reward;
 
-    let t = 0;
-    let T = Infinity;
+      const tdError = result.reward + config.gamma * v[result.nextState] - v[state];
 
-    while (true) {
-      if (t < T) {
-        if (isTerminal(state, config)) {
-          T = t;
-        } else {
-          const sNext = nextState(state, action, config);
-          const r = reward(sNext, config);
-          states.push(sNext);
-          rewards.push(r);
-          policy = epsilonGreedyPolicy(q, epsilon);
-          const aNext = sampleAction(policy[sNext]);
-          actions.push(aNext);
-        }
+      v[state] += criticAlpha * tdError;
+
+      for (let a = 0; a < numActions; a++) {
+        const indicator = a === action ? 1 : 0;
+        h[state][a] += actorAlpha * tdError * (indicator - policy[a]);
       }
 
-      const tau = t - n + 1;
-      if (tau >= 0) {
-        let G = 0;
-        for (let i = tau + 1; i <= Math.min(tau + n, T); i++) {
-          G += Math.pow(config.gamma, i - tau - 1) * rewards[i];
-        }
-        if (tau + n < T) {
-          G += Math.pow(config.gamma, n) * q[states[tau + n]][actions[tau + n]];
-        }
-        const sTau = states[tau];
-        const aTau = actions[tau];
-        q[sTau][aTau] += alpha * (G - q[sTau][aTau]);
-      }
-
-      if (tau === T - 1) break;
-
-      state = states[t + 1];
-      action = actions[t + 1];
-      t++;
-      if (t > maxSteps) break;
+      state = result.nextState;
+      if (result.done) break;
     }
 
-    history.push(q.map((row) => [...row]));
+    values.push(v.map((x) => x));
+    policies.push(h.map((row) => softmaxPolicy(row)));
+    rewardHistory.push(episodeReward);
   }
 
-  return history;
+  return { values, policies, rewardHistory };
 }
 
 /**
- * REINFORCE with baseline for a multi-armed bandit.
- * baseline is updated incrementally.
+ * Environment validation cases.
+ * Returns an array of test results that can be displayed in the UI or logged.
  */
-export function reinforceWithBaseline(
-  actionRewards: number[],
-  initialTheta: number[],
-  alpha: number,
-  beta: number,
-  episodes: number
-): {
-  thetaHistory: number[][];
-  policyHistory: number[][];
-  rewardHistory: number[];
-  baselineHistory: number[];
-} {
-  const theta = [...initialTheta];
-  let baseline = 0;
-  const thetaHistory: number[][] = [[...theta]];
-  const policyHistory: number[][] = [softmaxPolicy(theta)];
-  const rewardHistory: number[] = [];
-  const baselineHistory: number[] = [baseline];
+export interface ValidationCase {
+  name: string;
+  state: number;
+  action: Action;
+  taskType: TaskType;
+  expectedNextState: number;
+  expectedReward: number;
+  expectedDone: boolean;
+  passed: boolean;
+  actual: StepResult;
+}
 
-  for (let ep = 0; ep < episodes; ep++) {
-    const policy = softmaxPolicy(theta);
-    const action = sampleAction(policy);
-    const r = actionRewards[action] + (Math.random() * 2 - 1) * 0.5;
-    rewardHistory.push(r);
+export function validateEnvironment(config: GridWorldConfig = DEFAULT_CONFIG): ValidationCase[] {
+  const cases: Omit<ValidationCase, 'actual' | 'passed'>[] = [
+    {
+      name: 's1 + upward => s1, boundaryReward',
+      state: 0,
+      action: 0,
+      taskType: 'continuing',
+      expectedNextState: 0,
+      expectedReward: config.boundaryReward,
+      expectedDone: false,
+    },
+    {
+      name: 's1 + leftward => s1, boundaryReward',
+      state: 0,
+      action: 3,
+      taskType: 'continuing',
+      expectedNextState: 0,
+      expectedReward: config.boundaryReward,
+      expectedDone: false,
+    },
+    {
+      name: 's5 + rightward => s6, forbiddenReward',
+      state: 4,
+      action: 1,
+      taskType: 'continuing',
+      expectedNextState: 5,
+      expectedReward: config.forbiddenReward,
+      expectedDone: false,
+    },
+    {
+      name: 's8 + rightward => s9, targetReward',
+      state: 7,
+      action: 1,
+      taskType: 'continuing',
+      expectedNextState: 8,
+      expectedReward: config.targetReward,
+      expectedDone: false,
+    },
+    {
+      name: 'continuing: s9 + stay => s9, targetReward, done=false',
+      state: 8,
+      action: 4,
+      taskType: 'continuing',
+      expectedNextState: 8,
+      expectedReward: config.targetReward,
+      expectedDone: false,
+    },
+    {
+      name: 'continuing: s9 + rightward => s9, boundaryReward, done=false',
+      state: 8,
+      action: 1,
+      taskType: 'continuing',
+      expectedNextState: 8,
+      expectedReward: config.boundaryReward,
+      expectedDone: false,
+    },
+    {
+      name: 'episodic: entering s9 => done=true',
+      state: 7,
+      action: 1,
+      taskType: 'episodic',
+      expectedNextState: 8,
+      expectedReward: config.targetReward,
+      expectedDone: true,
+    },
+  ];
 
-    baseline += beta * (r - baseline);
-    baselineHistory.push(baseline);
-
-    const advantage = r - baseline;
-    for (let a = 0; a < theta.length; a++) {
-      const indicator = a === action ? 1 : 0;
-      theta[a] += alpha * advantage * (indicator - policy[a]);
-    }
-
-    thetaHistory.push([...theta]);
-    policyHistory.push(softmaxPolicy(theta));
-  }
-
-  return { thetaHistory, policyHistory, rewardHistory, baselineHistory };
+  return cases.map((c) => {
+    const testConfig = { ...config, taskType: c.taskType };
+    const actual = step(c.state, c.action, testConfig);
+    const passed =
+      actual.nextState === c.expectedNextState &&
+      actual.reward === c.expectedReward &&
+      actual.done === c.expectedDone;
+    return { ...c, actual, passed };
+  });
 }

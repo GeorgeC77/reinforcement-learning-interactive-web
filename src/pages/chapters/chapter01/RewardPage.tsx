@@ -14,7 +14,7 @@ import {
   type Action,
   type Policy,
   deterministicPolicy,
-  nextState,
+  step,
   reward,
   rewardForAction,
   isTerminal,
@@ -65,13 +65,13 @@ export default function Chapter01RewardPage() {
     const maxSteps = 12;
     let reachedTerminal = false;
 
-    for (let step = 0; step < maxSteps; step++) {
+    for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
       if (isTerminal(state, effectiveConfig)) break;
       const action = immediateGreedyPolicy[state].indexOf(1) as Action;
-      const sNext = nextState(state, action, effectiveConfig);
-      traj.push(sNext);
-      state = sNext;
-      if (isTerminal(state, effectiveConfig)) {
+      const result = step(state, action, effectiveConfig);
+      traj.push(result.nextState);
+      state = result.nextState;
+      if (result.done || isTerminal(state, effectiveConfig)) {
         reachedTerminal = true;
         break;
       }

@@ -16,8 +16,7 @@ import {
   type Action,
   type Policy,
   deterministicPolicy,
-  nextState,
-  reward,
+  step,
   isTerminal,
   discountedReturn,
 } from '@/lib/rl/gridworld';
@@ -41,21 +40,21 @@ export default function Chapter01ReturnsPage() {
     const traj: { state: number; action: Action; reward: number; nextState: number }[] = [];
     const maxSteps = 15;
 
-    for (let step = 0; step < maxSteps; step++) {
+    for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
       if (isTerminal(state, config)) {
         if (absorbing) {
           // absorbing target: stay forever with a5
-          traj.push({ state, action: 4, reward: reward(state, config), nextState: state });
+          const result = step(state, 4, config);
+          traj.push({ state, action: 4, reward: result.reward, nextState: result.nextState });
           if (traj.length >= maxSteps) break;
         } else {
           break;
         }
       } else {
         const action = sampleAction(policy[state]) as Action;
-        const sNext = nextState(state, action, config);
-        const r = reward(sNext, config);
-        traj.push({ state, action, reward: r, nextState: sNext });
-        state = sNext;
+        const result = step(state, action, config);
+        traj.push({ state, action, reward: result.reward, nextState: result.nextState });
+        state = result.nextState;
       }
     }
 
@@ -90,7 +89,7 @@ export default function Chapter01ReturnsPage() {
   // Markov quiz: deterministic next state for s5 + a2 (right) is s6
   const quizState = 4;
   const quizAction = 1;
-  const quizNext = nextState(quizState, quizAction, config);
+  const quizNext = step(quizState, quizAction, config).nextState;
   const quizHistory = 's1→a2→s2→a3→s5';
   const markovCorrect = markovGuess === quizNext;
 
