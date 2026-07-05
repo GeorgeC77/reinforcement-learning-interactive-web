@@ -23,7 +23,7 @@ import {
 export default function Chapter01PolicyPage() {
   const config = DEFAULT_CONFIG;
   const [policy, setPolicy] = useState<Policy>(() =>
-    deterministicPolicy([1, 1, 3, 1, 1, 1, 1, 1, 4] as Action[])
+    deterministicPolicy([1, 1, 2, 1, 1, 2, 4, 1, 4] as Action[])
   );
   const [selectedState, setSelectedState] = useState<number>(0);
   const [startState, setStartState] = useState<number>(config.startState);
@@ -75,7 +75,7 @@ export default function Chapter01PolicyPage() {
   function applyPreset(name: 'book' | 'right' | 'random' | 'stay') {
     if (name === 'book') {
       // s1: right/down 0.5; s3, s5: down to avoid forbidden; rest follow right/down heuristic
-      const base = deterministicPolicy([1, 1, 2, 1, 2, 2, 1, 1, 4] as Action[]);
+      const base = deterministicPolicy([1, 1, 2, 1, 1, 2, 4, 1, 4] as Action[]);
       const book = base.map((dist, s) => {
         if (s !== 0) return dist;
         const d = new Array(5).fill(0);

@@ -24,7 +24,7 @@ import {
 export default function Chapter01ReturnsPage() {
   const config = DEFAULT_CONFIG;
   const [policy, setPolicy] = useState<Policy>(() =>
-    deterministicPolicy([1, 1, 2, 1, 2, 2, 1, 1, 4] as Action[])
+    deterministicPolicy([1, 1, 2, 1, 1, 2, 4, 1, 4] as Action[])
   );
   const [startState, setStartState] = useState(config.startState);
   const [gamma, setGamma] = useState(config.gamma);

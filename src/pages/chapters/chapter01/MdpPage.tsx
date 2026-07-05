@@ -26,7 +26,7 @@ import {
 export default function Chapter01MdpPage() {
   const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [policy, setPolicy] = useState<Policy>(() =>
-    deterministicPolicy([1, 1, 3, 1, 1, 1, 1, 1, 4] as Action[])
+    deterministicPolicy([1, 1, 2, 1, 1, 2, 4, 1, 4] as Action[])
   );
   const [agentState, setAgentState] = useState(config.startState);
   const [trajectory, setTrajectory] = useState<number[]>([config.startState]);

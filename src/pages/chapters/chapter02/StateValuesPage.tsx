@@ -20,7 +20,7 @@ import {
 export default function Chapter02StateValuesPage() {
   const config = DEFAULT_CONFIG;
   const [policyA, setPolicyA] = useState<Policy>(() =>
-    deterministicPolicy([1, 1, 3, 1, 1, 1, 1, 1, 4] as Action[])
+    deterministicPolicy([1, 1, 2, 1, 1, 2, 4, 1, 4] as Action[])
   );
   const [policyB, setPolicyB] = useState<Policy>(() =>
     deterministicPolicy([2, 1, 2, 2, 1, 2, 2, 1, 4] as Action[])
