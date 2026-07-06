@@ -585,6 +585,150 @@ export function policyIteration(
 }
 
 /**
+ * Apply the Bellman optimality operator once to a value function.
+ * Returns (T*v)(s) = max_a q(s,a).
+ */
+export function bellmanOptimalityOperator(
+  values: StateValues,
+  config: GridWorldConfig
+): StateValues {
+  const q = computeQValues(values, config);
+  return q.map((row) => Math.max(...row));
+}
+
+/**
+ * Value iteration with convergence diagnostics.
+ * Returns the value/policy history plus per-iteration residuals and errors
+ * relative to the optimal value function v*.
+ */
+export function valueIterationConvergence(
+  config: GridWorldConfig,
+  maxIterations: number = 200,
+  tolerance: number = 1e-6
+): {
+  values: StateValues[];
+  policies: Policy[];
+  residuals: number[];
+  errors: number[];
+} {
+  const numStates = config.rows * config.cols;
+  const vStar =
+    valueIteration(config, 1000, 1e-12).values.at(-1) ??
+    new Array(numStates).fill(0);
+  let v = new Array(numStates).fill(0);
+  const values: StateValues[] = [v];
+  const policies: Policy[] = [];
+  const residuals: number[] = [];
+  const errors: number[] = [];
+
+  for (let k = 0; k < maxIterations; k++) {
+    const q = computeQValues(v, config);
+    const policy = greedyPolicy(q);
+    policies.push(policy);
+    const vNext = q.map((row) => Math.max(...row));
+    values.push(vNext);
+
+    const residual = Math.max(...vNext.map((val, i) => Math.abs(val - v[i])));
+    residuals.push(residual);
+    errors.push(Math.max(...vNext.map((val, i) => Math.abs(val - vStar[i]))));
+
+    v = vNext;
+    if (residual < tolerance) break;
+  }
+
+  return { values, policies, residuals, errors };
+}
+
+/**
+ * Gauss-Seidel (in-place) value iteration.
+ * Updates v(s) immediately, so later states in the same sweep use the new values.
+ */
+export function gaussSeidelValueIteration(
+  config: GridWorldConfig,
+  maxIterations: number = 200,
+  tolerance: number = 1e-6
+): { values: StateValues[]; policies: Policy[] } {
+  const numStates = config.rows * config.cols;
+  let v = new Array(numStates).fill(0);
+  const values: StateValues[] = [v];
+  const policies: Policy[] = [];
+
+  for (let k = 0; k < maxIterations; k++) {
+    let residual = 0;
+    for (let s = 0; s < numStates; s++) {
+      const old = v[s];
+      const q = computeQValues(v, config);
+      v[s] = Math.max(...q[s]);
+      residual = Math.max(residual, Math.abs(v[s] - old));
+    }
+    values.push([...v]);
+    policies.push(greedyPolicy(computeQValues(v, config)));
+    if (residual < tolerance) break;
+  }
+
+  return { values, policies };
+}
+
+function shuffleInPlace<T>(arr: T[]): T[] {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+/**
+ * Asynchronous value iteration.
+ * Each history entry corresponds to one state update (or one subset update).
+ * Modes:
+ *   - single-random: one random state per step
+ *   - single-sequential: cycle through states in order
+ *   - subset-random: a random subset of states per step
+ */
+export function asyncValueIteration(
+  config: GridWorldConfig,
+  maxSteps: number = 100,
+  tolerance: number = 1e-6,
+  mode: 'single-random' | 'single-sequential' | 'subset-random' = 'single-random'
+): { values: StateValues[]; policies: Policy[]; updatedStates: number[] } {
+  const numStates = config.rows * config.cols;
+  let v = new Array(numStates).fill(0);
+  const values: StateValues[] = [v];
+  const policies: Policy[] = [];
+  const updatedStates: number[] = [];
+
+  let seqIndex = 0;
+  for (let step = 0; step < maxSteps; step++) {
+    let statesToUpdate: number[];
+    if (mode === 'single-random') {
+      statesToUpdate = [Math.floor(Math.random() * numStates)];
+    } else if (mode === 'single-sequential') {
+      statesToUpdate = [seqIndex % numStates];
+      seqIndex++;
+    } else {
+      const subsetSize = Math.max(1, Math.ceil(numStates / 3));
+      const pool = Array.from({ length: numStates }, (_, i) => i);
+      shuffleInPlace(pool);
+      statesToUpdate = pool.slice(0, subsetSize);
+    }
+
+    let residual = 0;
+    for (const s of statesToUpdate) {
+      const old = v[s];
+      const q = computeQValues(v, config);
+      v[s] = Math.max(...q[s]);
+      residual = Math.max(residual, Math.abs(v[s] - old));
+    }
+    updatedStates.push(statesToUpdate[0]);
+    values.push([...v]);
+    policies.push(greedyPolicy(computeQValues(v, config)));
+    if (residual < tolerance) break;
+  }
+
+  return { values, policies, updatedStates };
+}
+
+/**
  * Build an epsilon-greedy policy from Q-values.
  */
 export function epsilonGreedyPolicy(qValues: number[][], epsilon: number): Policy {
@@ -1102,6 +1246,210 @@ export function mcBasic(
   );
 
   return { qValues, returns };
+}
+
+/**
+ * Estimate the optimal action-value function q* for reference and learning curves.
+ */
+export function estimateTrueActionValues(config: GridWorldConfig): number[][] {
+  const vStar =
+    valueIteration(config, 1000, 1e-12).values.at(-1) ??
+    new Array(config.rows * config.cols).fill(0);
+  return computeQValues(vStar, config);
+}
+
+/**
+ * Root-mean-square error between two Q-tables.
+ */
+export function qTableRMSE(q: number[][], qRef: number[][]): number {
+  let sum = 0;
+  let count = 0;
+  for (let s = 0; s < q.length; s++) {
+    for (let a = 0; a < q[s].length; a++) {
+      sum += Math.pow(q[s][a] - qRef[s][a], 2);
+      count++;
+    }
+  }
+  return count === 0 ? 0 : Math.sqrt(sum / count);
+}
+
+/**
+ * Monte Carlo Exploring Starts control.
+ * Returns the Q-value history (one entry per episode), episode total rewards,
+ * and the last sampled trajectory for inspection.
+ */
+export function mcExploringStarts(
+  config: GridWorldConfig,
+  numEpisodes: number = 200,
+  maxSteps: number = 30,
+  visitMode: 'first-visit' | 'every-visit' = 'first-visit'
+): {
+  qHistory: number[][][];
+  episodeRewards: number[];
+  lastTrajectory: { state: number; action: Action; reward: number; nextState: number }[];
+} {
+  const numStates = config.rows * config.cols;
+  const numActions = 5;
+  let q = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
+  const counts = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
+  const qHistory: number[][][] = [q.map((row) => [...row])];
+  const episodeRewards: number[] = [];
+  let lastTrajectory: { state: number; action: Action; reward: number; nextState: number }[] = [];
+
+  for (let ep = 0; ep < numEpisodes; ep++) {
+    const startState = Math.floor(Math.random() * numStates);
+    const startAction = Math.floor(Math.random() * numActions) as Action;
+    const policy = greedyPolicy(q);
+    const traj = generateTrajectory(startState, policy, config, maxSteps, startAction);
+    lastTrajectory = traj;
+    episodeRewards.push(traj.reduce((sum, step) => sum + step.reward, 0));
+
+    const visited = new Set<string>();
+    for (let t = 0; t < traj.length; t++) {
+      const s = traj[t].state;
+      const a = traj[t].action;
+      const key = `${s},${a}`;
+      if (visitMode === 'first-visit' && visited.has(key)) continue;
+      visited.add(key);
+
+      const g = discountedReturn(traj.slice(t), config.gamma);
+      counts[s][a] += 1;
+      const alpha = 1 / counts[s][a];
+      q[s][a] += alpha * (g - q[s][a]);
+    }
+    qHistory.push(q.map((row) => [...row]));
+  }
+
+  return { qHistory, episodeRewards, lastTrajectory };
+}
+
+/**
+ * Monte Carlo epsilon-greedy on-policy control.
+ */
+export function mcEpsilonGreedy(
+  config: GridWorldConfig,
+  numEpisodes: number = 200,
+  maxSteps: number = 30,
+  epsilon: number = 0.3,
+  visitMode: 'first-visit' | 'every-visit' = 'first-visit'
+): {
+  qHistory: number[][][];
+  episodeRewards: number[];
+  lastTrajectory: { state: number; action: Action; reward: number; nextState: number }[];
+} {
+  const numStates = config.rows * config.cols;
+  const numActions = 5;
+  let q = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
+  const counts = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
+  const qHistory: number[][][] = [q.map((row) => [...row])];
+  const episodeRewards: number[] = [];
+  let lastTrajectory: { state: number; action: Action; reward: number; nextState: number }[] = [];
+
+  for (let ep = 0; ep < numEpisodes; ep++) {
+    const startState = Math.floor(Math.random() * numStates);
+    const startAction = Math.floor(Math.random() * numActions) as Action;
+    const policy = epsilonGreedyPolicy(q, epsilon);
+    const traj = generateTrajectory(startState, policy, config, maxSteps, startAction);
+    lastTrajectory = traj;
+    episodeRewards.push(traj.reduce((sum, step) => sum + step.reward, 0));
+
+    const visited = new Set<string>();
+    for (let t = 0; t < traj.length; t++) {
+      const s = traj[t].state;
+      const a = traj[t].action;
+      const key = `${s},${a}`;
+      if (visitMode === 'first-visit' && visited.has(key)) continue;
+      visited.add(key);
+
+      const g = discountedReturn(traj.slice(t), config.gamma);
+      counts[s][a] += 1;
+      const alpha = 1 / counts[s][a];
+      q[s][a] += alpha * (g - q[s][a]);
+    }
+    qHistory.push(q.map((row) => [...row]));
+  }
+
+  return { qHistory, episodeRewards, lastTrajectory };
+}
+
+function computeImportanceSamplingRatio(
+  trajectory: { state: number; action: Action }[],
+  targetPolicy: Policy,
+  behaviorPolicy: Policy
+): number {
+  let rho = 1;
+  for (const step of trajectory) {
+    const targetProb = targetPolicy[step.state][step.action];
+    const behaviorProb = behaviorPolicy[step.state][step.action];
+    if (behaviorProb === 0) return 0;
+    rho *= targetProb / behaviorProb;
+  }
+  return rho;
+}
+
+/**
+ * Off-policy MC evaluation for a deterministic target policy using a behavior policy.
+ * For each (s,a), episodes start at (s,a) and follow the behavior policy.
+ * Supports ordinary and weighted importance sampling.
+ */
+export function offPolicyMCEvaluation(
+  targetPolicy: Policy,
+  behaviorPolicy: Policy,
+  config: GridWorldConfig,
+  numEpisodesPerPair: number = 20,
+  type: 'ordinary' | 'weighted' = 'ordinary',
+  maxSteps: number = 30
+): {
+  qValues: number[][];
+  qHistory: number[][][];
+  lastTrajectory: { state: number; action: Action; reward: number; nextState: number }[];
+  lastRho: number;
+} {
+  const numStates = config.rows * config.cols;
+  const numActions = 5;
+  const qValues: number[][] = Array.from({ length: numStates }, () =>
+    new Array(numActions).fill(0)
+  );
+  const qHistory: number[][][] = [qValues.map((row) => [...row])];
+
+  let lastTrajectory: { state: number; action: Action; reward: number; nextState: number }[] = [];
+  let lastRho = 0;
+
+  for (let s = 0; s < numStates; s++) {
+    for (let a = 0; a < numActions; a++) {
+      if (type === 'ordinary') {
+        const estimates: number[] = [];
+        for (let ep = 0; ep < numEpisodesPerPair; ep++) {
+          const traj = generateTrajectory(s, behaviorPolicy, config, maxSteps, a as Action);
+          if (s === 0 && a === 0 && ep === 0) lastTrajectory = traj;
+          const rho = computeImportanceSamplingRatio(traj, targetPolicy, behaviorPolicy);
+          if (s === 0 && a === 0 && ep === 0) lastRho = rho;
+          const g = discountedReturn(traj, config.gamma);
+          estimates.push(rho * g);
+        }
+        qValues[s][a] =
+          estimates.length > 0
+            ? estimates.reduce((sum, x) => sum + x, 0) / estimates.length
+            : 0;
+      } else {
+        let numerator = 0;
+        let denominator = 0;
+        for (let ep = 0; ep < numEpisodesPerPair; ep++) {
+          const traj = generateTrajectory(s, behaviorPolicy, config, maxSteps, a as Action);
+          if (s === 0 && a === 0 && ep === 0) lastTrajectory = traj;
+          const rho = computeImportanceSamplingRatio(traj, targetPolicy, behaviorPolicy);
+          if (s === 0 && a === 0 && ep === 0) lastRho = rho;
+          const g = discountedReturn(traj, config.gamma);
+          numerator += rho * g;
+          denominator += rho;
+        }
+        qValues[s][a] = denominator > 0 ? numerator / denominator : 0;
+      }
+      qHistory.push(qValues.map((row) => [...row]));
+    }
+  }
+
+  return { qValues, qHistory, lastTrajectory, lastRho };
 }
 
 /**

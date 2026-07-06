@@ -145,6 +145,13 @@ export const courseManifest: Part[] = [
             status: "completed",
             description: "动态规划求解最优策略。",
           },
+          {
+            id: "ch04-convergence",
+            title: "4.2 收敛性与异步 DP",
+            path: "/ch04/convergence",
+            status: "completed",
+            description: "压缩映射、收敛速度、Gauss-Seidel 与异步动态规划。",
+          },
         ],
       },
       {
@@ -165,6 +172,13 @@ export const courseManifest: Part[] = [
             path: "/ch05/mc",
             status: "completed",
             description: "MC Basic、Exploring Starts 与 ε-贪心。",
+          },
+          {
+            id: "ch05-off-policy",
+            title: "5.2 异策略 MC 与重要性采样",
+            path: "/ch05/off-policy",
+            status: "completed",
+            description: "同策略/异策略、普通与加权重要性采样。",
           },
         ],
       },

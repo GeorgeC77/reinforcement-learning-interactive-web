@@ -22,10 +22,12 @@ import Chapter03BoePage from './pages/chapters/chapter03/BoePage';
 // Chapter 4: Value Iteration & Policy Iteration
 import Chapter04OverviewPage from './pages/chapters/chapter04/OverviewPage';
 import Chapter04AlgorithmsPage from './pages/chapters/chapter04/AlgorithmsPage';
+import Chapter04ConvergencePage from './pages/chapters/chapter04/ConvergencePage';
 
 // Chapter 5: Monte Carlo Methods
 import Chapter05OverviewPage from './pages/chapters/chapter05/OverviewPage';
 import Chapter05MonteCarloPage from './pages/chapters/chapter05/MonteCarloPage';
+import Chapter05OffPolicyMCPage from './pages/chapters/chapter05/OffPolicyMCPage';
 
 // Chapter 6: Stochastic Approximation
 import Chapter06OverviewPage from './pages/chapters/chapter06/OverviewPage';
@@ -74,10 +76,12 @@ function App() {
           {/* Chapter 4 */}
           <Route path="/ch04/overview" element={<Chapter04OverviewPage />} />
           <Route path="/ch04/vi-pi" element={<Chapter04AlgorithmsPage />} />
+          <Route path="/ch04/convergence" element={<Chapter04ConvergencePage />} />
 
           {/* Chapter 5 */}
           <Route path="/ch05/overview" element={<Chapter05OverviewPage />} />
           <Route path="/ch05/mc" element={<Chapter05MonteCarloPage />} />
+          <Route path="/ch05/off-policy" element={<Chapter05OffPolicyMCPage />} />
 
           {/* Chapter 6 */}
           <Route path="/ch06/overview" element={<Chapter06OverviewPage />} />

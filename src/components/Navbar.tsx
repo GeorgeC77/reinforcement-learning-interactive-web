@@ -20,6 +20,7 @@ import {
   Gift,
   BarChart3,
   MousePointer2,
+  Scale,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -73,11 +74,13 @@ const chapter03Items: NavItem[] = [
 const chapter04Items: NavItem[] = [
   { to: '/ch04/overview', label: '课程概览', icon: BookOpen },
   { to: '/ch04/vi-pi', label: '值迭代与策略迭代', icon: RefreshCw },
+  { to: '/ch04/convergence', label: '收敛性与异步 DP', icon: TrendingDown },
 ];
 
 const chapter05Items: NavItem[] = [
   { to: '/ch05/overview', label: '课程概览', icon: BookOpen },
   { to: '/ch05/mc', label: '蒙特卡洛方法', icon: Dice5 },
+  { to: '/ch05/off-policy', label: '异策略 MC', icon: Scale },
 ];
 
 const chapter06Items: NavItem[] = [
