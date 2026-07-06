@@ -241,7 +241,7 @@ export const courseManifest: Part[] = [
             title: "8.1 值函数近似",
             path: "/ch08/fa",
             status: "completed",
-            description: "线性近似、LSTD 与 DQN。",
+            description: "多项式拟合、半梯度 TD(λ) 与 DQN（经验回放 + 目标网络）。",
           },
         ],
       },

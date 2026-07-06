@@ -298,7 +298,7 @@ export function normalizePolicy(policy: Policy): Policy {
   });
 }
 
-function sampleAction(probs: number[]): Action {
+export function sampleAction(probs: number[]): Action {
   const r = Math.random();
   let cum = 0;
   for (let i = 0; i < probs.length; i++) {
@@ -1012,6 +1012,143 @@ export function nStepSarsa(
     }
 
     history.push(q.map((row) => [...row]));
+  }
+
+  return history;
+}
+
+/**
+ * Expected Sarsa: on-policy TD control using the expected value under the
+ * current ε-greedy policy as the TD target.
+ */
+export function expectedSarsa(
+  config: GridWorldConfig,
+  alpha: number = 0.1,
+  epsilon: number = 0.3,
+  episodes: number = 200,
+  maxSteps: number = 30
+): number[][][] {
+  const numStates = config.rows * config.cols;
+  const numActions = 5;
+  let q = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
+  const history: number[][][] = [q.map((row) => [...row])];
+
+  for (let ep = 0; ep < episodes; ep++) {
+    let state = config.startState;
+
+    for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
+      if (isTerminal(state, config)) break;
+      const policy = epsilonGreedyPolicy(q, epsilon);
+      const action = sampleAction(policy[state]);
+      const result = step(state, action, config);
+
+      const nextPolicy = epsilonGreedyPolicy(q, epsilon);
+      const expectedQNext = q[result.nextState].reduce(
+        (sum, qVal, a) => sum + nextPolicy[result.nextState][a] * qVal,
+        0
+      );
+      const tdTarget = result.reward + config.gamma * expectedQNext;
+      q[state][action] += alpha * (tdTarget - q[state][action]);
+
+      state = result.nextState;
+      if (result.done) break;
+    }
+    history.push(q.map((row) => [...row]));
+  }
+
+  return history;
+}
+
+/**
+ * Sarsa(λ) with accumulating eligibility traces.
+ */
+export function sarsaLambda(
+  config: GridWorldConfig,
+  alpha: number = 0.1,
+  epsilon: number = 0.3,
+  lambda: number = 0.8,
+  episodes: number = 200,
+  maxSteps: number = 30
+): number[][][] {
+  const numStates = config.rows * config.cols;
+  const numActions = 5;
+  let q = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
+  const history: number[][][] = [q.map((row) => [...row])];
+
+  for (let ep = 0; ep < episodes; ep++) {
+    let state = config.startState;
+    const eligibility = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
+
+    const policy = epsilonGreedyPolicy(q, epsilon);
+    let action = sampleAction(policy[state]);
+
+    for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
+      if (isTerminal(state, config)) break;
+      const result = step(state, action, config);
+
+      const nextPolicy = epsilonGreedyPolicy(q, epsilon);
+      const nextAction = sampleAction(nextPolicy[result.nextState]);
+      const tdTarget = result.done
+        ? result.reward
+        : result.reward + config.gamma * q[result.nextState][nextAction];
+      const delta = tdTarget - q[state][action];
+
+      eligibility[state][action] += 1;
+
+      for (let s = 0; s < numStates; s++) {
+        for (let a = 0; a < numActions; a++) {
+          q[s][a] += alpha * delta * eligibility[s][a];
+          eligibility[s][a] *= config.gamma * lambda;
+        }
+      }
+
+      state = result.nextState;
+      action = nextAction;
+      if (result.done) break;
+    }
+    history.push(q.map((row) => [...row]));
+  }
+
+  return history;
+}
+
+/**
+ * TD(λ) prediction with accumulating eligibility traces for a fixed policy.
+ */
+export function tdLambdaPrediction(
+  policy: Policy,
+  config: GridWorldConfig,
+  alpha: number = 0.1,
+  lambda: number = 0.8,
+  episodes: number = 200,
+  maxSteps: number = 30
+): StateValues[] {
+  const numStates = config.rows * config.cols;
+  let v = new Array(numStates).fill(0);
+  const history: StateValues[] = [v.map((x) => x)];
+
+  for (let ep = 0; ep < episodes; ep++) {
+    let state = config.startState;
+    const eligibility = new Array(numStates).fill(0);
+
+    for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
+      if (isTerminal(state, config)) break;
+      const action = sampleAction(policy[state]);
+      const result = step(state, action, config);
+
+      const vNext = result.done ? 0 : v[result.nextState];
+      const delta = result.reward + config.gamma * vNext - v[state];
+
+      eligibility[state] += 1;
+      for (let s = 0; s < numStates; s++) {
+        v[s] += alpha * delta * eligibility[s];
+        eligibility[s] *= config.gamma * lambda;
+      }
+
+      state = result.nextState;
+      if (result.done) break;
+    }
+    history.push(v.map((x) => x));
   }
 
   return history;
