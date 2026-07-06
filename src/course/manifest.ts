@@ -283,7 +283,7 @@ export const courseManifest: Part[] = [
             title: "10.1 Actor-Critic",
             path: "/ch10/ac",
             status: "completed",
-            description: "QAC、A2C、离线 AC 与确定性 AC。",
+            description: "QAC、A2C、异策略 AC 与确定性 AC。",
           },
         ],
       },

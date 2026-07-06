@@ -327,6 +327,8 @@ export function computeBellmanComponents(
       if (prob === 0) continue;
       const result = step(s, a as Action, config);
       rPi[s] += prob * result.reward;
+      // In episodic tasks, terminal transitions do not bootstrap to nextState.
+      if (config.taskType === 'episodic' && result.done) continue;
       pPi[s][result.nextState] += prob;
     }
   }
@@ -489,7 +491,9 @@ export function computeQValues(
   for (let s = 0; s < numStates; s++) {
     for (let a = 0; a < 5; a++) {
       const result = step(s, a as Action, config);
-      q[s][a] = result.reward + config.gamma * values[result.nextState];
+      q[s][a] = result.done
+        ? result.reward
+        : result.reward + config.gamma * values[result.nextState];
     }
   }
 
@@ -860,7 +864,9 @@ export function tdZeroPrediction(
       if (isTerminal(state, config)) break;
       const action = sampleAction(policy[state]);
       const result = step(state, action, config);
-      const tdTarget = result.reward + config.gamma * v[result.nextState];
+      const tdTarget = result.done
+        ? result.reward
+        : result.reward + config.gamma * v[result.nextState];
       v[state] += alpha * (tdTarget - v[state]);
       state = result.nextState;
       if (result.done) break;
@@ -895,12 +901,15 @@ export function sarsa(
     for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
       if (isTerminal(state, config)) break;
       const result = step(state, action, config);
-      policy = epsilonGreedyPolicy(q, epsilon);
-      const aNext = sampleAction(policy[result.nextState]);
-      const tdTarget = result.reward + config.gamma * q[result.nextState][aNext];
+      let tdTarget = result.reward;
+      if (!result.done) {
+        policy = epsilonGreedyPolicy(q, epsilon);
+        const aNext = sampleAction(policy[result.nextState]);
+        tdTarget += config.gamma * q[result.nextState][aNext];
+        action = aNext;
+      }
       q[state][action] += alpha * (tdTarget - q[state][action]);
       state = result.nextState;
-      action = aNext;
       if (result.done) break;
     }
     history.push(q.map((row) => [...row]));
@@ -933,7 +942,9 @@ export function qLearning(
       const action = sampleAction(policy[state]);
       const result = step(state, action, config);
       const maxQNext = Math.max(...q[result.nextState]);
-      const tdTarget = result.reward + config.gamma * maxQNext;
+      const tdTarget = result.done
+        ? result.reward
+        : result.reward + config.gamma * maxQNext;
       q[state][action] += alpha * (tdTarget - q[state][action]);
       state = result.nextState;
       if (result.done) break;
@@ -1042,12 +1053,15 @@ export function expectedSarsa(
       const action = sampleAction(policy[state]);
       const result = step(state, action, config);
 
-      const nextPolicy = epsilonGreedyPolicy(q, epsilon);
-      const expectedQNext = q[result.nextState].reduce(
-        (sum, qVal, a) => sum + nextPolicy[result.nextState][a] * qVal,
-        0
-      );
-      const tdTarget = result.reward + config.gamma * expectedQNext;
+      let tdTarget = result.reward;
+      if (!result.done) {
+        const nextPolicy = epsilonGreedyPolicy(q, epsilon);
+        const expectedQNext = q[result.nextState].reduce(
+          (sum, qVal, a) => sum + nextPolicy[result.nextState][a] * qVal,
+          0
+        );
+        tdTarget += config.gamma * expectedQNext;
+      }
       q[state][action] += alpha * (tdTarget - q[state][action]);
 
       state = result.nextState;
@@ -1622,7 +1636,8 @@ export function actorCritic(
       const result = step(state, action as Action, config);
       episodeReward += result.reward;
 
-      const tdError = result.reward + config.gamma * v[result.nextState] - v[state];
+      const vNext = result.done ? 0 : v[result.nextState];
+      const tdError = result.reward + config.gamma * vNext - v[state];
 
       v[state] += criticAlpha * tdError;
 
@@ -1641,6 +1656,345 @@ export function actorCritic(
   }
 
   return { values, policies, rewardHistory };
+}
+
+export interface MDPStepDetail {
+  state: number;
+  action: Action;
+  reward: number;
+  prob: number;
+  return: number;
+}
+
+export interface MDPEpisode {
+  trajectory: { state: number; action: Action; reward: number; nextState: number }[];
+  totalReward: number;
+  stepDetails: MDPStepDetail[];
+}
+
+/**
+ * REINFORCE on the GridWorld MDP.
+ * Uses a softmax policy parameterized by preferences H[s][a].
+ */
+export function reinforceMDP(
+  config: GridWorldConfig,
+  alpha: number = 0.05,
+  episodes: number = 200,
+  maxSteps: number = 30
+): {
+  thetaHistory: number[][][];
+  policyHistory: Policy[];
+  episodes: MDPEpisode[];
+} {
+  const numStates = config.rows * config.cols;
+  const numActions = 5;
+  let h: number[][] = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
+
+  const thetaHistory: number[][][] = [h.map((row) => [...row])];
+  const policyHistory: Policy[] = [h.map((row) => softmaxPolicy(row))];
+  const episodeDetails: MDPEpisode[] = [];
+
+  for (let ep = 0; ep < episodes; ep++) {
+    const trajectory: { state: number; action: Action; reward: number; nextState: number }[] = [];
+    let state = config.startState;
+    let episodeReward = 0;
+
+    for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
+      if (isTerminal(state, config)) break;
+      const policy = softmaxPolicy(h[state]);
+      const action = sampleAction(policy);
+      const result = step(state, action, config);
+      trajectory.push({ state, action, reward: result.reward, nextState: result.nextState });
+      episodeReward += result.reward;
+      state = result.nextState;
+      if (result.done) break;
+    }
+
+    const returns: number[] = new Array(trajectory.length).fill(0);
+    let g = 0;
+    for (let t = trajectory.length - 1; t >= 0; t--) {
+      g = config.gamma * g + trajectory[t].reward;
+      returns[t] = g;
+    }
+
+    const stepDetails: MDPStepDetail[] = [];
+    for (let t = 0; t < trajectory.length; t++) {
+      const { state: s, action: a, reward: r } = trajectory[t];
+      const policy = softmaxPolicy(h[s]);
+      stepDetails.push({ state: s, action: a, reward: r, prob: policy[a], return: returns[t] });
+
+      for (let actionIdx = 0; actionIdx < numActions; actionIdx++) {
+        const indicator = actionIdx === a ? 1 : 0;
+        h[s][actionIdx] += alpha * returns[t] * (indicator - policy[actionIdx]);
+      }
+    }
+
+    episodeDetails.push({ trajectory, totalReward: episodeReward, stepDetails });
+    thetaHistory.push(h.map((row) => [...row]));
+    policyHistory.push(h.map((row) => softmaxPolicy(row)));
+  }
+
+  return { thetaHistory, policyHistory, episodes: episodeDetails };
+}
+
+/**
+ * REINFORCE with baseline on the GridWorld MDP.
+ * Baseline is a state-value estimate updated incrementally per episode.
+ */
+export function reinforceMDPWithBaseline(
+  config: GridWorldConfig,
+  alpha: number = 0.05,
+  beta: number = 0.1,
+  episodes: number = 200,
+  maxSteps: number = 30
+): {
+  thetaHistory: number[][][];
+  policyHistory: Policy[];
+  episodes: MDPEpisode[];
+  baselineHistory: number[][];
+} {
+  const numStates = config.rows * config.cols;
+  const numActions = 5;
+  let h: number[][] = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
+  let baseline: number[] = new Array(numStates).fill(0);
+
+  const thetaHistory: number[][][] = [h.map((row) => [...row])];
+  const policyHistory: Policy[] = [h.map((row) => softmaxPolicy(row))];
+  const baselineHistory: number[][] = [baseline.map((x) => x)];
+  const episodeDetails: MDPEpisode[] = [];
+
+  for (let ep = 0; ep < episodes; ep++) {
+    const trajectory: { state: number; action: Action; reward: number; nextState: number }[] = [];
+    let state = config.startState;
+    let episodeReward = 0;
+
+    for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
+      if (isTerminal(state, config)) break;
+      const policy = softmaxPolicy(h[state]);
+      const action = sampleAction(policy);
+      const result = step(state, action, config);
+      trajectory.push({ state, action, reward: result.reward, nextState: result.nextState });
+      episodeReward += result.reward;
+      state = result.nextState;
+      if (result.done) break;
+    }
+
+    const returns: number[] = new Array(trajectory.length).fill(0);
+    let g = 0;
+    for (let t = trajectory.length - 1; t >= 0; t--) {
+      g = config.gamma * g + trajectory[t].reward;
+      returns[t] = g;
+    }
+
+    const stepDetails: MDPStepDetail[] = [];
+    for (let t = 0; t < trajectory.length; t++) {
+      const { state: s, action: a, reward: r } = trajectory[t];
+      const policy = softmaxPolicy(h[s]);
+      const b = baseline[s];
+      stepDetails.push({ state: s, action: a, reward: r, prob: policy[a], return: returns[t] });
+
+      for (let actionIdx = 0; actionIdx < numActions; actionIdx++) {
+        const indicator = actionIdx === a ? 1 : 0;
+        h[s][actionIdx] += alpha * (returns[t] - b) * (indicator - policy[actionIdx]);
+      }
+
+      // Incremental baseline update for this state
+      baseline[s] += beta * (returns[t] - baseline[s]);
+    }
+
+    episodeDetails.push({ trajectory, totalReward: episodeReward, stepDetails });
+    thetaHistory.push(h.map((row) => [...row]));
+    policyHistory.push(h.map((row) => softmaxPolicy(row)));
+    baselineHistory.push(baseline.map((x) => x));
+  }
+
+  return { thetaHistory, policyHistory, episodes: episodeDetails, baselineHistory };
+}
+
+/**
+ * QAC (Q-function Actor-Critic).
+ * Critic estimates q(s,a); actor uses q(s,a) as the weight in the policy gradient.
+ */
+export function qac(
+  config: GridWorldConfig,
+  actorAlpha: number = 0.05,
+  criticAlpha: number = 0.1,
+  episodes: number = 200,
+  maxSteps: number = 30
+): {
+  qHistory: number[][][];
+  policies: Policy[];
+  rewardHistory: number[];
+} {
+  const numStates = config.rows * config.cols;
+  const numActions = 5;
+  let h = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
+  let q = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
+
+  const qHistory: number[][][] = [q.map((row) => [...row])];
+  const policies: Policy[] = [h.map((row) => softmaxPolicy(row))];
+  const rewardHistory: number[] = [0];
+
+  for (let ep = 0; ep < episodes; ep++) {
+    let state = config.startState;
+    let episodeReward = 0;
+
+    for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
+      if (isTerminal(state, config)) break;
+      const policy = softmaxPolicy(h[state]);
+      const action = sampleAction(policy);
+      const result = step(state, action as Action, config);
+      episodeReward += result.reward;
+
+      const policyForNext = softmaxPolicy(h[result.nextState]);
+      const aNext = sampleAction(policyForNext);
+      const tdTarget = result.done
+        ? result.reward
+        : result.reward + config.gamma * q[result.nextState][aNext];
+      const criticError = tdTarget - q[state][action];
+      q[state][action] += criticAlpha * criticError;
+
+      // Actor update uses the critic's q(s,a) estimate
+      for (let a = 0; a < numActions; a++) {
+        const indicator = a === action ? 1 : 0;
+        h[state][a] += actorAlpha * q[state][action] * (indicator - policy[a]);
+      }
+
+      state = result.nextState;
+      if (result.done) break;
+    }
+
+    qHistory.push(q.map((row) => [...row]));
+    policies.push(h.map((row) => softmaxPolicy(row)));
+    rewardHistory.push(episodeReward);
+  }
+
+  return { qHistory, policies, rewardHistory };
+}
+
+/**
+ * A2C (Advantage Actor-Critic).
+ * Critic estimates V(s); advantage is the TD error.
+ */
+export function a2c(
+  config: GridWorldConfig,
+  actorAlpha: number = 0.05,
+  criticAlpha: number = 0.1,
+  episodes: number = 200,
+  maxSteps: number = 30
+): {
+  values: StateValues[];
+  policies: Policy[];
+  rewardHistory: number[];
+} {
+  const numStates = config.rows * config.cols;
+  const numActions = 5;
+  let h = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
+  let v = new Array(numStates).fill(0);
+
+  const values: StateValues[] = [v.map((x) => x)];
+  const policies: Policy[] = [h.map((row) => softmaxPolicy(row))];
+  const rewardHistory: number[] = [0];
+
+  for (let ep = 0; ep < episodes; ep++) {
+    let state = config.startState;
+    let episodeReward = 0;
+
+    for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
+      if (isTerminal(state, config)) break;
+      const policy = softmaxPolicy(h[state]);
+      const action = sampleAction(policy);
+      const result = step(state, action as Action, config);
+      episodeReward += result.reward;
+
+      const vNext = result.done ? 0 : v[result.nextState];
+      const tdError = result.reward + config.gamma * vNext - v[state];
+
+      v[state] += criticAlpha * tdError;
+
+      for (let a = 0; a < numActions; a++) {
+        const indicator = a === action ? 1 : 0;
+        h[state][a] += actorAlpha * tdError * (indicator - policy[a]);
+      }
+
+      state = result.nextState;
+      if (result.done) break;
+    }
+
+    values.push(v.map((x) => x));
+    policies.push(h.map((row) => softmaxPolicy(row)));
+    rewardHistory.push(episodeReward);
+  }
+
+  return { values, policies, rewardHistory };
+}
+
+/**
+ * Off-policy Actor-Critic.
+ * Behavior policy beta is ε-greedy w.r.t. the critic; target policy pi is softmax.
+ * Actor and critic updates are weighted by importance sampling ratio rho.
+ */
+export function offPolicyActorCritic(
+  config: GridWorldConfig,
+  actorAlpha: number = 0.05,
+  criticAlpha: number = 0.1,
+  epsilon: number = 0.5,
+  episodes: number = 200,
+  maxSteps: number = 30
+): {
+  qHistory: number[][][];
+  policies: Policy[];
+  rewardHistory: number[];
+  rhoHistory: { state: number; action: Action; rho: number }[];
+} {
+  const numStates = config.rows * config.cols;
+  const numActions = 5;
+  let h = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
+  let q = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
+
+  const qHistory: number[][][] = [q.map((row) => [...row])];
+  const policies: Policy[] = [h.map((row) => softmaxPolicy(row))];
+  const rewardHistory: number[] = [0];
+  const rhoHistory: { state: number; action: Action; rho: number }[] = [];
+
+  for (let ep = 0; ep < episodes; ep++) {
+    let state = config.startState;
+    let episodeReward = 0;
+
+    for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
+      if (isTerminal(state, config)) break;
+      const targetPolicy = softmaxPolicy(h[state]);
+      const behaviorPolicy = epsilonGreedyPolicy(q, epsilon)[state];
+      const action = sampleAction(behaviorPolicy);
+      const result = step(state, action as Action, config);
+      episodeReward += result.reward;
+
+      const rho = targetPolicy[action] / (behaviorPolicy[action] + 1e-12);
+      rhoHistory.push({ state, action: action as Action, rho });
+
+      const policyForNext = softmaxPolicy(h[result.nextState]);
+      const aNext = sampleAction(policyForNext);
+      const tdTarget = result.done
+        ? result.reward
+        : result.reward + config.gamma * q[result.nextState][aNext];
+      const criticError = tdTarget - q[state][action];
+      q[state][action] += criticAlpha * rho * criticError;
+
+      for (let a = 0; a < numActions; a++) {
+        const indicator = a === action ? 1 : 0;
+        h[state][a] += actorAlpha * rho * q[state][action] * (indicator - targetPolicy[a]);
+      }
+
+      state = result.nextState;
+      if (result.done) break;
+    }
+
+    qHistory.push(q.map((row) => [...row]));
+    policies.push(h.map((row) => softmaxPolicy(row)));
+    rewardHistory.push(episodeReward);
+  }
+
+  return { qHistory, policies, rewardHistory, rhoHistory };
 }
 
 /**

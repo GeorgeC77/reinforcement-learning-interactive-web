@@ -19,6 +19,7 @@ import LineChart from '@/components/LineChart';
 import ConceptAccordion from '@/components/ConceptAccordion';
 import {
   DEFAULT_CONFIG,
+  ACTION_NAMES,
   deterministicPolicy,
   greedyPolicy,
   actionValueToStateValue,
@@ -28,10 +29,12 @@ import {
 import {
   semiGradientTD,
   dqnGridWorld,
+  actionValueFA,
   type FeatureMode,
+  type ActionValueFeatureMode,
 } from '@/lib/rl/fa';
 
-type TabKey = 'polynomial' | 'semi-gradient' | 'dqn';
+type TabKey = 'polynomial' | 'semi-gradient' | 'action-value' | 'dqn';
 
 const RIGHT_POLICY: (0 | 1 | 2 | 3 | 4)[] = [1, 1, 1, 1, 1, 1, 1, 1, 1];
 
@@ -90,7 +93,8 @@ export default function Chapter08FaPage() {
         <TabsList className="grid w-full grid-cols-3">
           <TabsTrigger value="polynomial">多项式拟合</TabsTrigger>
           <TabsTrigger value="semi-gradient">半梯度 TD(λ)</TabsTrigger>
-          <TabsTrigger value="dqn">DQN 骨架</TabsTrigger>
+          <TabsTrigger value="action-value">动作值近似 q(s,a,w)</TabsTrigger>
+          <TabsTrigger value="dqn">Deep Q-learning / DQN</TabsTrigger>
         </TabsList>
 
         <TabsContent value="polynomial" className="mt-4">
@@ -98,6 +102,9 @@ export default function Chapter08FaPage() {
         </TabsContent>
         <TabsContent value="semi-gradient" className="mt-4">
           <SemiGradientDemo />
+        </TabsContent>
+        <TabsContent value="action-value" className="mt-4">
+          <ActionValueFADemo />
         </TabsContent>
         <TabsContent value="dqn" className="mt-4">
           <DQNDemo />
@@ -401,6 +408,134 @@ function SemiGradientDemo() {
 }
 
 // ------------------- DQN skeleton -------------------
+function ActionValueFADemo() {
+  const config = DEFAULT_CONFIG;
+  const qStar = useMemo(() => estimateTrueActionValues(config), [config]);
+  const [algorithm, setAlgorithm] = useState<'sarsa' | 'qlearning'>('sarsa');
+  const [featureMode, setFeatureMode] = useState<ActionValueFeatureMode>('shared');
+  const [alpha, setAlpha] = useState(0.05);
+  const [epsilon, setEpsilon] = useState(0.3);
+  const [episodes, setEpisodes] = useState(200);
+  const [seed, setSeed] = useState(0);
+
+  const result = useMemo(() => {
+    void seed;
+    return actionValueFA(config, {
+      alpha,
+      epsilon,
+      gamma: config.gamma,
+      episodes,
+      maxSteps: 30,
+      featureMode,
+      algorithm,
+    });
+  }, [config, algorithm, featureMode, alpha, epsilon, episodes, seed]);
+
+  const finalQ = result.qHistory[result.qHistory.length - 1];
+  const finalPolicy = useMemo(() => greedyPolicy(finalQ), [finalQ]);
+  const finalValues = useMemo(() => actionValueToStateValue(finalQ), [finalQ]);
+  const finalRMSE = useMemo(() => qTableRMSE(finalQ, qStar), [finalQ, qStar]);
+
+  const last = result.lastUpdate;
+
+  return (
+    <InteractiveDemo title="动作值函数近似 q(s,a,w)">
+      <div className="grid lg:grid-cols-[1fr_340px] gap-6">
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col items-center justify-center bg-gray-50 rounded-xl p-6 border border-gray-200">
+            <GridWorld config={config} policy={finalPolicy} values={finalValues} showValues className="max-w-full" />
+            <p className="mt-3 text-sm text-gray-500 text-center">训练结束后的贪心策略与状态值</p>
+          </div>
+          {last && (
+            <div className="bg-white rounded-xl border border-gray-200 p-4 text-sm">
+              <h3 className="font-semibold text-gray-800 mb-2">最近一次更新</h3>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-gray-700">
+                <div>状态 s：<span className="font-mono">s{last.state + 1}</span></div>
+                <div>动作 a：<span className="font-mono">{ACTION_NAMES[last.action]}</span></div>
+                <div>奖励 r：<span className="font-mono">{last.reward.toFixed(2)}</span></div>
+                <div>下一状态 s&apos;：<span className="font-mono">s{last.nextState + 1}</span></div>
+                {last.nextAction !== undefined && (
+                  <div>下一动作 a&apos;：<span className="font-mono">{ACTION_NAMES[last.nextAction]}</span></div>
+                )}
+                <div>预测 q(s,a,w)：<span className="font-mono">{last.prediction.toFixed(3)}</span></div>
+                <div>目标 y：<span className="font-mono">{last.target.toFixed(3)}</span></div>
+                <div>TD 误差 δ：<span className="font-mono">{last.tdError.toFixed(3)}</span></div>
+                <div>权重变化 ‖Δw‖：<span className="font-mono">{last.weightChange.toFixed(5)}</span></div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="space-y-4">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">设置</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div>
+                <label className="text-sm text-gray-700 block mb-1">算法</label>
+                <Select value={algorithm} onValueChange={(v) => setAlgorithm(v as 'sarsa' | 'qlearning')}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="选择算法" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="sarsa">Sarsa with FA</SelectItem>
+                    <SelectItem value="qlearning">Q-learning with FA</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <label className="text-sm text-gray-700 block mb-1">特征构造</label>
+                <Select value={featureMode} onValueChange={(v) => setFeatureMode(v as ActionValueFeatureMode)}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="选择特征" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="onehot">one-hot(s,a) — 表格等价</SelectItem>
+                    <SelectItem value="shared">共享状态特征 + 动作 one-hot + 交互</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <div className="text-sm text-gray-600 mb-1">学习率 α</div>
+                <Slider value={[alpha]} min={0.001} max={0.2} step={0.001} onValueChange={([v]) => setAlpha(v)} />
+                <div className="mt-1 text-center font-mono text-sm text-gray-700">{alpha.toFixed(3)}</div>
+              </div>
+              <div>
+                <div className="text-sm text-gray-600 mb-1">探索率 ε</div>
+                <Slider value={[epsilon]} min={0} max={1} step={0.05} onValueChange={([v]) => setEpsilon(v)} />
+                <div className="mt-1 text-center font-mono text-sm text-gray-700">{epsilon.toFixed(2)}</div>
+              </div>
+              <div>
+                <div className="text-sm text-gray-600 mb-1">训练回合数</div>
+                <Slider value={[episodes]} min={50} max={500} step={50} onValueChange={([v]) => setEpisodes(v)} />
+                <div className="mt-1 text-center font-mono text-sm text-gray-700">{episodes}</div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">结果</CardTitle>
+            </CardHeader>
+            <CardContent className="text-sm text-gray-700 space-y-1">
+              <div>最终 RMSE（相对 q*）：<span className="font-mono font-semibold">{finalRMSE.toFixed(4)}</span></div>
+              <div>权重维度：<span className="font-mono">{result.weightsHistory[0].length}</span></div>
+              <div className="text-xs text-gray-500 mt-1">
+                共享特征包含：[1, rowNorm, colNorm, distanceToTarget, isForbidden] + action one-hot + 交互项
+              </div>
+            </CardContent>
+          </Card>
+
+          <Button onClick={() => setSeed((s) => s + 1)} variant="outline" className="w-full">
+            重新随机训练
+          </Button>
+        </div>
+      </div>
+    </InteractiveDemo>
+  );
+}
+
 function DQNDemo() {
   const config = DEFAULT_CONFIG;
   const qStar = useMemo(() => estimateTrueActionValues(config), [config]);

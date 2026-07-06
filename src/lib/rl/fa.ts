@@ -433,3 +433,185 @@ function sampleReplay<T>(buffer: T[], n: number): T[] {
   }
   return sample;
 }
+
+// ---------------------------------------------------------------------------
+// Action-value function approximation
+// ---------------------------------------------------------------------------
+
+export type ActionValueFeatureMode = 'onehot' | 'shared';
+
+function distanceStateFeatures(state: number, config: GridWorldConfig): number[] {
+  const { row, col } = { row: Math.floor(state / config.cols), col: state % config.cols };
+  const rNorm = config.rows > 1 ? (row / (config.rows - 1)) * 2 - 1 : 0;
+  const cNorm = config.cols > 1 ? (col / (config.cols - 1)) * 2 - 1 : 0;
+  const { row: tRow, col: tCol } = {
+    row: Math.floor(config.targetState / config.cols),
+    col: config.targetState % config.cols,
+  };
+  const distanceToTarget = Math.sqrt((row - tRow) ** 2 + (col - tCol) ** 2);
+  const maxDist = Math.sqrt((config.rows - 1) ** 2 + (config.cols - 1) ** 2);
+  const isForbidden = config.forbiddenStates.includes(state) ? 1 : 0;
+  return [1, rNorm, cNorm, distanceToTarget / Math.max(1, maxDist), isForbidden];
+}
+
+export function actionValueFeatureDim(
+  config: GridWorldConfig,
+  mode: ActionValueFeatureMode
+): number {
+  if (mode === 'onehot') return config.rows * config.cols * 5;
+  const stateDim = distanceStateFeatures(0, config).length;
+  const actionDim = 5;
+  return stateDim + actionDim + stateDim * actionDim;
+}
+
+export function actionValueFeatures(
+  state: number,
+  action: Action,
+  config: GridWorldConfig,
+  mode: ActionValueFeatureMode
+): number[] {
+  if (mode === 'onehot') {
+    const dim = config.rows * config.cols * 5;
+    const vec = new Array(dim).fill(0);
+    vec[state * 5 + action] = 1;
+    return vec;
+  }
+
+  const stateFeat = distanceStateFeatures(state, config);
+  const actionFeat = new Array(5).fill(0);
+  actionFeat[action] = 1;
+  const interaction: number[] = [];
+  for (const sf of stateFeat) {
+    for (const af of actionFeat) {
+      interaction.push(sf * af);
+    }
+  }
+  return [...stateFeat, ...actionFeat, ...interaction];
+}
+
+export interface ActionValueFAOptions {
+  alpha: number;
+  epsilon: number;
+  gamma?: number;
+  episodes: number;
+  maxSteps: number;
+  featureMode: ActionValueFeatureMode;
+  algorithm: 'sarsa' | 'qlearning';
+}
+
+export interface LastFAUpdate {
+  state: number;
+  action: Action;
+  reward: number;
+  nextState: number;
+  nextAction?: Action;
+  prediction: number;
+  target: number;
+  tdError: number;
+  weightChange: number;
+}
+
+export function actionValueFA(
+  config: GridWorldConfig,
+  options: ActionValueFAOptions
+): {
+  qHistory: number[][][];
+  weightsHistory: number[][];
+  lastUpdate: LastFAUpdate | null;
+} {
+  const { alpha, epsilon, gamma = config.gamma, episodes, maxSteps, featureMode, algorithm } = options;
+  const numStates = config.rows * config.cols;
+  const numActions = 5;
+  const featureDim = actionValueFeatureDim(config, featureMode);
+  let w = new Array(featureDim).fill(0);
+
+  const qHistory: number[][][] = [];
+  const weightsHistory: number[][] = [];
+  let lastUpdate: LastFAUpdate | null = null;
+
+  function qValue(state: number, action: Action): number {
+    return dot(actionValueFeatures(state, action, config, featureMode), w);
+  }
+
+  function greedyAction(state: number): Action {
+    const qs = Array.from({ length: numActions }, (_, a) => qValue(state, a as Action));
+    const maxQ = Math.max(...qs);
+    const best = qs
+      .map((q, i) => ({ q, i }))
+      .filter(({ q }) => Math.abs(q - maxQ) < 1e-6)
+      .map(({ i }) => i);
+    return best[Math.floor(Math.random() * best.length)] as Action;
+  }
+
+  function sampleEpsilonGreedy(state: number): Action {
+    if (Math.random() < epsilon) {
+      return Math.floor(Math.random() * numActions) as Action;
+    }
+    return greedyAction(state);
+  }
+
+  for (let ep = 0; ep < episodes; ep++) {
+    let state = config.startState;
+    let action = sampleEpsilonGreedy(state);
+
+    for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
+      if (isTerminal(state, config)) break;
+      const result = step(state, action, config);
+      const phi = actionValueFeatures(state, action, config, featureMode);
+      const prediction = dot(phi, w);
+
+      let target = result.reward;
+      let nextAction: Action | undefined;
+      if (!result.done) {
+        if (algorithm === 'sarsa') {
+          nextAction = sampleEpsilonGreedy(result.nextState);
+          target += gamma * qValue(result.nextState, nextAction);
+        } else {
+          const maxQ = Math.max(
+            ...Array.from({ length: numActions }, (_, a) => qValue(result.nextState, a as Action))
+          );
+          target += gamma * maxQ;
+        }
+      }
+
+      const tdError = target - prediction;
+      const update = alpha * tdError;
+      const weightBefore = w.map((x) => x);
+      for (let i = 0; i < featureDim; i++) {
+        w[i] += update * phi[i];
+      }
+      const weightChange = Math.sqrt(
+        w.reduce((sum, wi, i) => sum + (wi - weightBefore[i]) ** 2, 0)
+      );
+
+      lastUpdate = {
+        state,
+        action,
+        reward: result.reward,
+        nextState: result.nextState,
+        nextAction,
+        prediction,
+        target,
+        tdError,
+        weightChange,
+      };
+
+      state = result.nextState;
+      action = algorithm === 'sarsa' && nextAction !== undefined ? nextAction : sampleEpsilonGreedy(state);
+      if (result.done) break;
+    }
+
+    const qTable: number[][] = [];
+    for (let s = 0; s < numStates; s++) {
+      const row: number[] = [];
+      for (let a = 0; a < numActions; a++) {
+        row.push(qValue(s, a as Action));
+      }
+      qTable.push(row);
+    }
+    qHistory.push(qTable);
+    weightsHistory.push([...w]);
+  }
+
+  return { qHistory, weightsHistory, lastUpdate };
+}
