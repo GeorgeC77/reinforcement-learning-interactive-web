@@ -322,6 +322,11 @@ export function computeBellmanComponents(
   const pPi: number[][] = Array.from({ length: numStates }, () => new Array(numStates).fill(0));
 
   for (let s = 0; s < numStates; s++) {
+    if (isTerminal(s, config)) {
+      rPi[s] = 0;
+      continue;
+    }
+
     for (let a = 0; a < 5; a++) {
       const prob = policy[s][a];
       if (prob === 0) continue;
@@ -489,6 +494,11 @@ export function computeQValues(
   const q: number[][] = Array.from({ length: numStates }, () => new Array(5).fill(0));
 
   for (let s = 0; s < numStates; s++) {
+    if (isTerminal(s, config)) {
+      q[s] = new Array(5).fill(0);
+      continue;
+    }
+
     for (let a = 0; a < 5; a++) {
       const result = step(s, a as Action, config);
       q[s][a] = result.done
@@ -900,17 +910,23 @@ export function sarsa(
 
     for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
       if (isTerminal(state, config)) break;
-      const result = step(state, action, config);
+      const currentAction = action;
+      const result = step(state, currentAction, config);
+
       let tdTarget = result.reward;
+      let nextAction: Action | null = null;
       if (!result.done) {
         policy = epsilonGreedyPolicy(q, epsilon);
-        const aNext = sampleAction(policy[result.nextState]);
-        tdTarget += config.gamma * q[result.nextState][aNext];
-        action = aNext;
+        nextAction = sampleAction(policy[result.nextState]);
+        tdTarget += config.gamma * q[result.nextState][nextAction];
       }
-      q[state][action] += alpha * (tdTarget - q[state][action]);
+
+      // Update Q(S_t, A_t) BEFORE moving to the next action.
+      q[state][currentAction] += alpha * (tdTarget - q[state][currentAction]);
+
       state = result.nextState;
       if (result.done) break;
+      if (nextAction !== null) action = nextAction;
     }
     history.push(q.map((row) => [...row]));
   }
@@ -993,10 +1009,13 @@ export function nStepSarsa(
           const result = step(state, action, config);
           states.push(result.nextState);
           rewards.push(result.reward);
-          policy = epsilonGreedyPolicy(q, epsilon);
-          const aNext = sampleAction(policy[result.nextState]);
-          actions.push(aNext);
-          if (result.done) T = t + 1;
+          if (result.done) {
+            T = t + 1;
+          } else {
+            policy = epsilonGreedyPolicy(q, epsilon);
+            const aNext = sampleAction(policy[result.nextState]);
+            actions.push(aNext);
+          }
         }
       }
 
@@ -1846,11 +1865,12 @@ export function qac(
       const result = step(state, action as Action, config);
       episodeReward += result.reward;
 
-      const policyForNext = softmaxPolicy(h[result.nextState]);
-      const aNext = sampleAction(policyForNext);
-      const tdTarget = result.done
-        ? result.reward
-        : result.reward + config.gamma * q[result.nextState][aNext];
+      let tdTarget = result.reward;
+      if (!result.done) {
+        const policyForNext = softmaxPolicy(h[result.nextState]);
+        const aNext = sampleAction(policyForNext);
+        tdTarget += config.gamma * q[result.nextState][aNext];
+      }
       const criticError = tdTarget - q[state][action];
       q[state][action] += criticAlpha * criticError;
 
@@ -1930,11 +1950,82 @@ export function a2c(
 }
 
 /**
- * Off-policy Actor-Critic.
- * Behavior policy beta is ε-greedy w.r.t. the critic; target policy pi is softmax.
- * Actor and critic updates are weighted by importance sampling ratio rho.
+ * Textbook off-policy Actor-Critic (Algorithm 10.3 style).
+ *
+ * Behavior policy beta is an epsilon-soft version of the target softmax policy pi.
+ * Critic estimates V(s); the TD error serves as the advantage.
+ * Both actor and critic updates are weighted by importance sampling ratio rho.
  */
 export function offPolicyActorCritic(
+  config: GridWorldConfig,
+  actorAlpha: number = 0.05,
+  criticAlpha: number = 0.1,
+  epsilon: number = 0.5,
+  episodes: number = 200,
+  maxSteps: number = 30
+): {
+  values: StateValues[];
+  policies: Policy[];
+  rewardHistory: number[];
+  rhoHistory: { state: number; action: Action; rho: number }[];
+} {
+  const numStates = config.rows * config.cols;
+  const numActions = 5;
+  let h = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
+  let v = new Array(numStates).fill(0);
+
+  const values: StateValues[] = [v.map((x) => x)];
+  const policies: Policy[] = [h.map((row) => softmaxPolicy(row))];
+  const rewardHistory: number[] = [0];
+  const rhoHistory: { state: number; action: Action; rho: number }[] = [];
+
+  for (let ep = 0; ep < episodes; ep++) {
+    let state = config.startState;
+    let episodeReward = 0;
+
+    for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
+      if (isTerminal(state, config)) break;
+      const targetPolicy = softmaxPolicy(h[state]);
+
+      // Epsilon-soft behavior policy derived from the target policy.
+      const behaviorPolicy = targetPolicy.map((p) => epsilon / numActions + (1 - epsilon) * p);
+      const action = sampleAction(behaviorPolicy);
+      const result = step(state, action as Action, config);
+      episodeReward += result.reward;
+
+      const rho = targetPolicy[action] / (behaviorPolicy[action] + 1e-12);
+      rhoHistory.push({ state, action: action as Action, rho });
+
+      const vNext = result.done ? 0 : v[result.nextState];
+      const tdError = result.reward + config.gamma * vNext - v[state];
+
+      // Critic update: V-based TD error weighted by rho.
+      v[state] += criticAlpha * rho * tdError;
+
+      // Actor update: policy gradient weighted by rho * tdError.
+      for (let a = 0; a < numActions; a++) {
+        const indicator = a === action ? 1 : 0;
+        h[state][a] += actorAlpha * rho * tdError * (indicator - targetPolicy[a]);
+      }
+
+      state = result.nextState;
+      if (result.done) break;
+    }
+
+    values.push(v.map((x) => x));
+    policies.push(h.map((row) => softmaxPolicy(row)));
+    rewardHistory.push(episodeReward);
+  }
+
+  return { values, policies, rewardHistory, rhoHistory };
+}
+
+/**
+ * Q-based off-policy Actor-Critic (extension).
+ * Behavior policy beta is ε-greedy w.r.t. the critic Q(s,a); target policy pi is softmax.
+ * Actor and critic updates are weighted by importance sampling ratio rho.
+ */
+export function qBasedOffPolicyActorCritic(
   config: GridWorldConfig,
   actorAlpha: number = 0.05,
   criticAlpha: number = 0.1,
@@ -1972,11 +2063,12 @@ export function offPolicyActorCritic(
       const rho = targetPolicy[action] / (behaviorPolicy[action] + 1e-12);
       rhoHistory.push({ state, action: action as Action, rho });
 
-      const policyForNext = softmaxPolicy(h[result.nextState]);
-      const aNext = sampleAction(policyForNext);
-      const tdTarget = result.done
-        ? result.reward
-        : result.reward + config.gamma * q[result.nextState][aNext];
+      let tdTarget = result.reward;
+      if (!result.done) {
+        const policyForNext = softmaxPolicy(h[result.nextState]);
+        const aNext = sampleAction(policyForNext);
+        tdTarget += config.gamma * q[result.nextState][aNext];
+      }
       const criticError = tdTarget - q[state][action];
       q[state][action] += criticAlpha * rho * criticError;
 

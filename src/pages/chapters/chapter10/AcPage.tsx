@@ -4,6 +4,13 @@ import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import KaTeX from '@/components/KaTeX';
 import FormulaCard from '@/components/FormulaCard';
 import InteractiveDemo from '@/components/InteractiveDemo';
@@ -16,6 +23,7 @@ import {
   qac,
   a2c,
   offPolicyActorCritic,
+  qBasedOffPolicyActorCritic,
   actionValueToStateValue,
 } from '@/lib/rl/gridworld';
 
@@ -66,14 +74,14 @@ export default function Chapter10AcPage() {
           description="Advantage 用 TD error 近似，Critic 估计状态值 V(s)。"
         />
         <FormulaCard
-          title="异策略 Actor-Critic"
+          title="异策略 Actor-Critic（教材版）"
           formula={
             <KaTeX
-              math={String.raw`\rho_t = \frac{\pi_\theta(a_t|s_t)}{\beta(a_t|s_t)}, \quad \theta \leftarrow \theta + \alpha_\theta \rho_t q(s_t,a_t) \nabla_\theta \log \pi_\theta(a_t|s_t)`}
+              math={String.raw`\rho_t = \frac{\pi_\theta(a_t|s_t)}{\beta(a_t|s_t)}, \quad \delta_t = r + \gamma v(s') - v(s), \quad \theta \leftarrow \theta + \alpha_\theta \rho_t \delta_t \nabla_\theta \log \pi_\theta(a_t|s_t)`}
               display
             />
           }
-          description="行为策略 β 采样，目标策略 π 更新，重要性采样比 ρ 修正分布差异。"
+          description="教材 Algorithm 10.3 风格：Critic 估计 V(s)，用 ρ 修正 TD error 来同时更新 Actor 与 Critic。"
         />
         <FormulaCard
           title="确定性 Actor-Critic"
@@ -153,10 +161,11 @@ function DiscreteACDemo({ algorithm }: { algorithm: 'qac' | 'a2c' | 'offpolicy' 
   const [epsilon, setEpsilon] = useState(algorithm === 'offpolicy' ? 0.5 : 0.3);
   const [episodes, setEpisodes] = useState(150);
   const [step, setStep] = useState(0);
+  const [offpolicyVariant, setOffpolicyVariant] = useState<'textbook' | 'extended'>('textbook');
 
   useEffect(() => {
     setStep(0);
-  }, [algorithm, actorAlpha, criticAlpha, epsilon, episodes]);
+  }, [algorithm, actorAlpha, criticAlpha, epsilon, episodes, offpolicyVariant]);
 
   const history = useMemo(() => {
     if (algorithm === 'qac') {
@@ -171,7 +180,17 @@ function DiscreteACDemo({ algorithm }: { algorithm: 'qac' | 'a2c' | 'offpolicy' 
       const { values, policies, rewardHistory } = a2c(config, actorAlpha, criticAlpha, episodes);
       return values.map((v, i) => ({ values: v, policy: policies[i], reward: rewardHistory[i] }));
     }
-    const { qHistory, policies, rewardHistory } = offPolicyActorCritic(
+    if (offpolicyVariant === 'textbook') {
+      const { values, policies, rewardHistory } = offPolicyActorCritic(
+        config,
+        actorAlpha,
+        criticAlpha,
+        epsilon,
+        episodes
+      );
+      return values.map((v, i) => ({ values: v, policy: policies[i], reward: rewardHistory[i] }));
+    }
+    const { qHistory, policies, rewardHistory } = qBasedOffPolicyActorCritic(
       config,
       actorAlpha,
       criticAlpha,
@@ -183,7 +202,7 @@ function DiscreteACDemo({ algorithm }: { algorithm: 'qac' | 'a2c' | 'offpolicy' 
       policy: policies[i],
       reward: rewardHistory[i],
     }));
-  }, [algorithm, config, actorAlpha, criticAlpha, epsilon, episodes]);
+  }, [algorithm, config, actorAlpha, criticAlpha, epsilon, episodes, offpolicyVariant]);
 
   const current = history[Math.min(step, history.length - 1)];
   const maxStep = history.length - 1;
@@ -202,7 +221,9 @@ function DiscreteACDemo({ algorithm }: { algorithm: 'qac' | 'a2c' | 'offpolicy' 
       ? 'QAC：Critic 估计 q(s,a) 驱动 Actor'
       : algorithm === 'a2c'
       ? 'A2C：用 TD error 作为 advantage'
-      : '异策略 Actor-Critic：用 ρ 修正行为策略样本';
+      : offpolicyVariant === 'textbook'
+      ? '异策略 Actor-Critic（教材版）：V-based + 重要性采样'
+      : '异策略 Actor-Critic（扩展版）：Q-based + 重要性采样';
 
   return (
     <InteractiveDemo title={title}>
@@ -236,7 +257,21 @@ function DiscreteACDemo({ algorithm }: { algorithm: 'qac' | 'a2c' | 'offpolicy' 
               <Param label="Actor α" value={actorAlpha} set={setActorAlpha} min={0.001} max={0.2} step={0.001} fixed={3} />
               <Param label="Critic α" value={criticAlpha} set={setCriticAlpha} min={0.001} max={0.5} step={0.001} fixed={3} />
               {algorithm === 'offpolicy' && (
-                <Param label="行为策略 ε" value={epsilon} set={setEpsilon} min={0.05} max={1} step={0.05} fixed={2} />
+                <>
+                  <div>
+                    <label className="text-sm text-gray-700 block mb-1">算法版本</label>
+                    <Select value={offpolicyVariant} onValueChange={(v) => setOffpolicyVariant(v as 'textbook' | 'extended')}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="选择版本" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="textbook">教材版：V-based off-policy AC</SelectItem>
+                        <SelectItem value="extended">扩展版：Q-based off-policy AC</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <Param label="行为策略 ε" value={epsilon} set={setEpsilon} min={0.05} max={1} step={0.05} fixed={2} />
+                </>
               )}
               <Param label="训练回合数" value={episodes} set={setEpisodes} min={20} max={300} step={10} />
             </CardContent>
