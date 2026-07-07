@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { Activity, ShieldAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
@@ -154,8 +154,11 @@ function DiscreteACDemo({ algorithm }: { algorithm: 'qac' | 'a2c' | 'offpolicy' 
   const [episodes, setEpisodes] = useState(150);
   const [step, setStep] = useState(0);
 
-  const history = useMemo(() => {
+  useEffect(() => {
     setStep(0);
+  }, [algorithm, actorAlpha, criticAlpha, epsilon, episodes]);
+
+  const history = useMemo(() => {
     if (algorithm === 'qac') {
       const { qHistory, policies, rewardHistory } = qac(config, actorAlpha, criticAlpha, episodes);
       return qHistory.map((q, i) => ({

@@ -2013,8 +2013,10 @@ export interface ValidationCase {
   actual: StepResult;
 }
 
+type ValidationCaseInput = Omit<ValidationCase, 'passed' | 'actual'>;
+
 export function validateEnvironment(config: GridWorldConfig = DEFAULT_CONFIG): ValidationCase[] {
-  const cases: Omit<ValidationCase, 'actual' | 'passed'>[] = [
+  const cases: ValidationCaseInput[] = [
     {
       name: 's1 + upward => s1, boundaryReward',
       state: 0,
