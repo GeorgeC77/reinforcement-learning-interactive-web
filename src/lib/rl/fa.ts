@@ -13,6 +13,7 @@ import {
   step,
   isTerminal,
   sampleAction,
+  solveStateValues,
 } from './gridworld';
 
 // ---------------------------------------------------------------------------
@@ -134,55 +135,6 @@ export function semiGradientTD(
   }
 
   return { valuesHistory, weightsHistory, trueValues };
-}
-
-function solveStateValues(policy: Policy, config: GridWorldConfig): StateValues {
-  const numStates = config.rows * config.cols;
-  const rPi = new Array(numStates).fill(0);
-  const pPi: number[][] = Array.from({ length: numStates }, () => new Array(numStates).fill(0));
-
-  for (let s = 0; s < numStates; s++) {
-    for (let a = 0; a < 5; a++) {
-      const prob = policy[s][a];
-      if (prob === 0) continue;
-      const result = step(s, a as Action, config);
-      rPi[s] += prob * result.reward;
-      pPi[s][result.nextState] += prob;
-    }
-  }
-
-  const A: number[][] = Array.from({ length: numStates }, (_, i) =>
-    Array.from({ length: numStates }, (_, j) => (i === j ? 1 : 0) - config.gamma * pPi[i][j])
-  );
-  return solveLinearSystem(A, rPi);
-}
-
-function solveLinearSystem(A: number[][], b: number[]): number[] {
-  const n = A.length;
-  const M: number[][] = A.map((row, i) => [...row, b[i]]);
-
-  for (let i = 0; i < n; i++) {
-    let maxRow = i;
-    for (let k = i + 1; k < n; k++) {
-      if (Math.abs(M[k][i]) > Math.abs(M[maxRow][i])) maxRow = k;
-    }
-    [M[i], M[maxRow]] = [M[maxRow], M[i]];
-
-    const pivot = M[i][i];
-    if (Math.abs(pivot) < 1e-12) {
-      throw new Error('Singular matrix encountered while solving Bellman equation.');
-    }
-
-    for (let j = i; j <= n; j++) M[i][j] /= pivot;
-
-    for (let k = 0; k < n; k++) {
-      if (k === i) continue;
-      const factor = M[k][i];
-      for (let j = i; j <= n; j++) M[k][j] -= factor * M[i][j];
-    }
-  }
-
-  return M.map((row) => row[n]);
 }
 
 // ---------------------------------------------------------------------------
