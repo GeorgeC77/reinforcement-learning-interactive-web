@@ -1,9 +1,16 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { GitBranch, ShieldAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import KaTeX from '@/components/KaTeX';
 import FormulaCard from '@/components/FormulaCard';
 import InteractiveDemo from '@/components/InteractiveDemo';
@@ -13,6 +20,7 @@ import LineChart from '@/components/LineChart';
 import ConceptAccordion from '@/components/ConceptAccordion';
 import {
   DEFAULT_CONFIG,
+  EPISODIC_PATH_CONFIG,
   ACTION_NAMES,
   type Action,
   reinforceBandit,
@@ -334,11 +342,19 @@ function PolicyRepresentationDemo() {
 
 // ------------------- MDP REINFORCE Demo -------------------
 function MDPDemo() {
-  const config = DEFAULT_CONFIG;
+  const [taskType, setTaskType] = useState<'continuing' | 'episodic'>('episodic');
+  const config = useMemo(
+    () => (taskType === 'episodic' ? EPISODIC_PATH_CONFIG : DEFAULT_CONFIG),
+    [taskType]
+  );
   const [alpha, setAlpha] = useState(0.05);
   const [episodes, setEpisodes] = useState(150);
   const [seed, setSeed] = useState(0);
   const [step, setStep] = useState(0);
+
+  useEffect(() => {
+    setStep(0);
+  }, [taskType, config]);
 
   const result = useMemo(() => {
     void seed;
@@ -382,6 +398,18 @@ function MDPDemo() {
           <Card>
             <CardHeader className="pb-2"><CardTitle className="text-base">参数</CardTitle></CardHeader>
             <CardContent className="space-y-4">
+              <div>
+                <label className="text-sm text-gray-700 block mb-1">任务类型</label>
+                <Select value={taskType} onValueChange={(v) => setTaskType(v as 'continuing' | 'episodic')}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="选择任务类型" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="episodic">episodic path-finding（默认）</SelectItem>
+                    <SelectItem value="continuing">教材 continuing GridWorld</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
               <Param label="α" value={alpha} set={setAlpha} min={0.001} max={0.2} step={0.001} fixed={3} />
               <Param label="回合数" value={episodes} set={setEpisodes} min={20} max={300} step={10} />
             </CardContent>
@@ -401,12 +429,20 @@ function MDPDemo() {
 
 // ------------------- Baseline Demo -------------------
 function BaselineDemo() {
-  const config = DEFAULT_CONFIG;
+  const [taskType, setTaskType] = useState<'continuing' | 'episodic'>('episodic');
+  const config = useMemo(
+    () => (taskType === 'episodic' ? EPISODIC_PATH_CONFIG : DEFAULT_CONFIG),
+    [taskType]
+  );
   const [alpha, setAlpha] = useState(0.05);
   const [beta, setBeta] = useState(0.1);
   const [episodes, setEpisodes] = useState(150);
   const [seed, setSeed] = useState(0);
   const [step, setStep] = useState(0);
+
+  useEffect(() => {
+    setStep(0);
+  }, [taskType, config]);
 
   const result = useMemo(() => {
     void seed;
@@ -450,6 +486,18 @@ function BaselineDemo() {
           <Card>
             <CardHeader className="pb-2"><CardTitle className="text-base">参数</CardTitle></CardHeader>
             <CardContent className="space-y-4">
+              <div>
+                <label className="text-sm text-gray-700 block mb-1">任务类型</label>
+                <Select value={taskType} onValueChange={(v) => setTaskType(v as 'continuing' | 'episodic')}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="选择任务类型" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="episodic">episodic path-finding（默认）</SelectItem>
+                    <SelectItem value="continuing">教材 continuing GridWorld</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
               <Param label="α" value={alpha} set={setAlpha} min={0.001} max={0.2} step={0.001} fixed={3} />
               <Param label="β（基线更新）" value={beta} set={setBeta} min={0.001} max={0.5} step={0.001} fixed={3} />
               <Param label="回合数" value={episodes} set={setEpisodes} min={20} max={300} step={10} />

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { Clock, ShieldAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
@@ -48,8 +48,11 @@ export default function Chapter07TdPage() {
 
   const config = DEFAULT_CONFIG;
 
-  const history = useMemo(() => {
+  useEffect(() => {
     setStep(0);
+  }, [algorithm, alpha, epsilon, episodes, nStep, lambda]);
+
+  const history = useMemo(() => {
     if (algorithm === 'td0') {
       const policy = deterministicPolicy(RIGHT_POLICY, 5);
       const values = tdZeroPrediction(policy, config, alpha, episodes);

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { Repeat, ShieldAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -60,8 +60,11 @@ export default function Chapter04AlgorithmsPage() {
 
   const config = DEFAULT_CONFIG;
 
-  const history = useMemo(() => {
+  useEffect(() => {
     setStep(0);
+  }, [algorithm, tpiEvalSteps]);
+
+  const history = useMemo(() => {
     if (algorithm === 'vi') {
       const { values, policies } = valueIteration(config, 200, 1e-6);
       return policies.map((policy, i) => ({ values: values[i + 1], policy }));

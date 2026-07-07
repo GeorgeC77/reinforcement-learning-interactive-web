@@ -3,6 +3,14 @@ import { Brain, ShieldAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Select,
@@ -361,6 +369,7 @@ function SemiGradientDemo() {
                     <SelectItem value="onehot">One-hot（表格等价）</SelectItem>
                     <SelectItem value="coordinate">坐标归一化</SelectItem>
                     <SelectItem value="polynomial">坐标多项式</SelectItem>
+                    <SelectItem value="distance">距离目标 + 禁区特征</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -576,7 +585,7 @@ function DQNDemo() {
   }, [result]);
 
   return (
-    <InteractiveDemo title="DQN 骨架：神经网络 + 经验回放 + 目标网络">
+    <InteractiveDemo title="Deep Q-learning / DQN：神经网络 + 经验回放 + 目标网络">
       <div className="grid lg:grid-cols-[1fr_340px] gap-6">
         <div className="flex flex-col gap-4">
           <div className="flex flex-col items-center justify-center bg-gray-50 rounded-xl p-6 border border-gray-200">
@@ -593,6 +602,43 @@ function DQNDemo() {
               height={220}
             />
           </div>
+          {result.lastBatch.length > 0 && (
+            <div className="bg-white rounded-xl border border-gray-200 p-4">
+              <h3 className="font-semibold text-gray-800 mb-2 text-sm">
+                最近一次训练采样的 mini-batch（共 {result.lastBatch.length} 条）
+              </h3>
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-10">s</TableHead>
+                      <TableHead className="w-10">a</TableHead>
+                      <TableHead className="w-10">r</TableHead>
+                      <TableHead className="w-10">s&apos;</TableHead>
+                      <TableHead className="w-14">done</TableHead>
+                      <TableHead>target y</TableHead>
+                      <TableHead>Q(s,a)</TableHead>
+                      <TableHead>TD error / loss</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {result.lastBatch.map((row, i) => (
+                      <TableRow key={i} className="bg-blue-50/60">
+                        <TableCell className="font-mono">{row.state + 1}</TableCell>
+                        <TableCell className="font-mono">{ACTION_NAMES[row.action]}</TableCell>
+                        <TableCell className="font-mono">{row.reward.toFixed(2)}</TableCell>
+                        <TableCell className="font-mono">{row.nextState + 1}</TableCell>
+                        <TableCell className="font-mono">{row.done ? '是' : '否'}</TableCell>
+                        <TableCell className="font-mono">{row.target.toFixed(3)}</TableCell>
+                        <TableCell className="font-mono">{row.prediction.toFixed(3)}</TableCell>
+                        <TableCell className="font-mono">{(row.loss).toFixed(4)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="space-y-4">

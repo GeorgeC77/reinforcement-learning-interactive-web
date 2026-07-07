@@ -51,12 +51,13 @@ export function polynomialCoordinateFeatures(
   return phi;
 }
 
-export type FeatureMode = 'onehot' | 'coordinate' | 'polynomial';
+export type FeatureMode = 'onehot' | 'coordinate' | 'polynomial' | 'distance';
 
 function makeFeatureFn(mode: FeatureMode, degree?: number) {
   return (state: number, config: GridWorldConfig) => {
     if (mode === 'onehot') return oneHotFeatures(state, config);
     if (mode === 'coordinate') return coordinateFeatures(state, config);
+    if (mode === 'distance') return distanceStateFeatures(state, config);
     return polynomialCoordinateFeatures(state, config, degree ?? 2);
   };
 }
@@ -322,6 +323,17 @@ function randomMatrix(rows: number, cols: number, scale: number): number[][] {
 // DQN on the GridWorld using coordinate features
 // ---------------------------------------------------------------------------
 
+export interface DQNBatchItem {
+  state: number;
+  action: Action;
+  reward: number;
+  nextState: number;
+  done: boolean;
+  target: number;
+  prediction: number;
+  loss: number;
+}
+
 export function dqnGridWorld(
   config: GridWorldConfig,
   options: DQNOptions
@@ -329,6 +341,7 @@ export function dqnGridWorld(
   qHistory: number[][][];
   lossHistory: number[];
   finalReplaySize: number;
+  lastBatch: DQNBatchItem[];
 } {
   const {
     hiddenSize,
@@ -352,6 +365,7 @@ export function dqnGridWorld(
 
   const qHistory: number[][][] = [];
   const lossHistory: number[] = [];
+  let lastBatch: DQNBatchItem[] = [];
   let trainStepCount = 0;
 
   function stateFeatures(state: number): number[] {
@@ -390,13 +404,17 @@ export function dqnGridWorld(
       if (replay.length >= batchSize) {
         const batch = sampleReplay(replay, batchSize);
         let totalLoss = 0;
+        const batchDetails: DQNBatchItem[] = [];
         for (const trans of batch) {
           const qNext = networkQ(targetNet, trans.nextState);
           const maxQNext = Math.max(...qNext);
           const target = trans.done ? trans.reward : trans.reward + gamma * maxQNext;
+          const prediction = networkQ(mainNet, trans.state)[trans.action];
           const loss = mainNet.trainStep(stateFeatures(trans.state), trans.action, target, alpha);
+          batchDetails.push({ ...trans, target, prediction, loss });
           totalLoss += loss;
         }
+        lastBatch = batchDetails;
         lossHistory.push(totalLoss / batch.length);
         trainStepCount++;
 
@@ -420,7 +438,7 @@ export function dqnGridWorld(
     qHistory.push(qTable);
   }
 
-  return { qHistory, lossHistory, finalReplaySize: replay.length };
+  return { qHistory, lossHistory, finalReplaySize: replay.length, lastBatch };
 }
 
 function sampleReplay<T>(buffer: T[], n: number): T[] {
