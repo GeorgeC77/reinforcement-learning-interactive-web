@@ -528,6 +528,32 @@ export function greedyPolicy(qValues: number[][]): Policy {
 }
 
 /**
+ * Greedy policy that treats terminal states as absorbing (always stay).
+ * Use this for episodic task visualization so that the target cell does not
+ * display a random action arrow.
+ */
+export function greedyPolicyWithTerminal(
+  qValues: number[][],
+  config: GridWorldConfig
+): Policy {
+  return qValues.map((q, s) => {
+    const dist = new Array(5).fill(0);
+    if (isTerminal(s, config)) {
+      dist[4] = 1; // stay / terminal
+      return dist;
+    }
+    const maxQ = Math.max(...q);
+    const bestActions = q
+      .map((value, idx) => ({ value, idx }))
+      .filter(({ value }) => Math.abs(value - maxQ) < 1e-9)
+      .map(({ idx }) => idx);
+    const action = bestActions[Math.floor(Math.random() * bestActions.length)];
+    dist[action] = 1;
+    return dist;
+  });
+}
+
+/**
  * Run value iteration and return the history of value functions and policies.
  */
 export function valueIteration(
@@ -542,7 +568,7 @@ export function valueIteration(
 
   for (let k = 0; k < maxIterations; k++) {
     const q = computeQValues(v, config);
-    const policy = greedyPolicy(q);
+    const policy = greedyPolicyWithTerminal(q, config);
     policies.push(policy);
 
     const vNext = q.map((qRow) => Math.max(...qRow));
@@ -584,7 +610,7 @@ export function policyIteration(
     values.push(v);
 
     const q = computeQValues(v, config);
-    const newPolicy = greedyPolicy(q);
+    const newPolicy = greedyPolicyWithTerminal(q, config);
 
     const isSame = policy.every((dist, s) =>
       dist.every((p, a) => Math.abs(p - newPolicy[s][a]) < 1e-9)
@@ -637,7 +663,7 @@ export function valueIterationConvergence(
 
   for (let k = 0; k < maxIterations; k++) {
     const q = computeQValues(v, config);
-    const policy = greedyPolicy(q);
+    const policy = greedyPolicyWithTerminal(q, config);
     policies.push(policy);
     const vNext = q.map((row) => Math.max(...row));
     values.push(vNext);
@@ -676,7 +702,7 @@ export function gaussSeidelValueIteration(
       residual = Math.max(residual, Math.abs(v[s] - old));
     }
     values.push([...v]);
-    policies.push(greedyPolicy(computeQValues(v, config)));
+    policies.push(greedyPolicyWithTerminal(computeQValues(v, config), config));
     if (residual < tolerance) break;
   }
 
@@ -735,7 +761,7 @@ export function asyncValueIteration(
     }
     updatedStates.push(statesToUpdate[0]);
     values.push([...v]);
-    policies.push(greedyPolicy(computeQValues(v, config)));
+    policies.push(greedyPolicyWithTerminal(computeQValues(v, config), config));
     if (residual < tolerance) break;
   }
 
