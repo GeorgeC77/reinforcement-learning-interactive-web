@@ -794,7 +794,8 @@ export function actionValueToStateValue(qValues: number[][]): StateValues {
 }
 
 /**
- * Estimate action values using MC Basic (first-visit every-episode).
+ * Estimate action values for a FIXED policy using MC (first-visit every-episode).
+ * This is a single policy-evaluation step, NOT the complete MC Basic control.
  * For each (s,a), run numEpisodes episodes and average returns.
  */
 export function estimateActionValuesMC(
@@ -1445,6 +1446,201 @@ export function mcBasic(
 }
 
 /**
+ * MC Basic policy iteration (Algorithm 5.1) — the COMPLETE textbook algorithm.
+ *
+ * for k = 0, 1, 2, ...:
+ *   1. For each (s,a), sample episodes starting from (s,a), then follow π_k;
+ *      estimate q_{π_k}(s,a) by averaging returns.
+ *   2. π_{k+1}(s) = greedy(q_k(s,*))
+ *   3. Stop if policy is stable.
+ *
+ * This is NOT a single policy-evaluation step. The old `mcBasic()` is a
+ * single-evaluation helper and has been kept for backward compatibility.
+ */
+export interface MCBasicIteration {
+  iteration: number;
+  policyBefore: Policy;
+  qEstimate: number[][];
+  policyAfter: Policy;
+  policyStable: boolean;
+}
+
+export function mcBasicPolicyIteration(
+  config: GridWorldConfig,
+  episodesPerPair: number = 20,
+  maxSteps: number = 30,
+  maxPolicyIterations: number = 20,
+  initialPolicy?: Policy
+): {
+  iterations: MCBasicIteration[];
+  finalPolicy: Policy;
+  finalQ: number[][];
+} {
+  const numStates = config.rows * config.cols;
+  const numActions = 5;
+  let policy: Policy = initialPolicy ?? randomPolicy(numStates, numActions);
+  const iterations: MCBasicIteration[] = [];
+
+  for (let k = 0; k < maxPolicyIterations; k++) {
+    // Step 1: MC policy evaluation of current policy
+    const { qValues } = estimateActionValuesMC(policy, config, episodesPerPair, maxSteps);
+
+    // Step 2: greedy policy improvement
+    const newPolicy = greedyPolicy(qValues);
+
+    // Step 3: check stability
+    const policyStable = policy.every((dist, s) =>
+      dist.every((p, a) => Math.abs(p - newPolicy[s][a]) < 1e-9)
+    );
+
+    iterations.push({
+      iteration: k,
+      policyBefore: policy.map((row) => [...row]),
+      qEstimate: qValues.map((row) => [...row]),
+      policyAfter: newPolicy.map((row) => [...row]),
+      policyStable,
+    });
+
+    policy = newPolicy;
+    if (policyStable) break;
+  }
+
+  const finalQ = iterations.length > 0
+    ? iterations[iterations.length - 1].qEstimate
+    : Array.from({ length: numStates }, () => new Array(numActions).fill(0));
+
+  return { iterations, finalPolicy: policy, finalQ };
+}
+
+/**
+ * Persistent learner state for incremental MC training.
+ * Allows "run N more episodes" to continue from where the previous run left off.
+ */
+export interface MCLearnerState {
+  q: number[][];
+  returnsSum: number[][];
+  visitCount: number[][];
+  policy: Policy;
+  episodesCompleted: number;
+}
+
+export function createMCLearnerState(config: GridWorldConfig): MCLearnerState {
+  const numStates = config.rows * config.cols;
+  const numActions = 5;
+  return {
+    q: Array.from({ length: numStates }, () => new Array(numActions).fill(0)),
+    returnsSum: Array.from({ length: numStates }, () => new Array(numActions).fill(0)),
+    visitCount: Array.from({ length: numStates }, () => new Array(numActions).fill(0)),
+    policy: randomPolicy(numStates, numActions),
+    episodesCompleted: 0,
+  };
+}
+
+/**
+ * Incremental MC Exploring Starts: continues training from learnerState.
+ * Does NOT reinitialize Q, returns, or counts.
+ */
+export function runMCExploringStartsEpisodes(
+  learnerState: MCLearnerState,
+  config: GridWorldConfig,
+  additionalEpisodes: number,
+  maxSteps: number = 30,
+  visitMode: 'first-visit' | 'every-visit' = 'first-visit'
+): MCLearnerState {
+  const numStates = config.rows * config.cols;
+  const numActions = 5;
+  // Deep-copy the incoming state so the caller's reference is not mutated
+  const q = learnerState.q.map((row) => [...row]);
+  const returnsSum = learnerState.returnsSum.map((row) => [...row]);
+  const visitCount = learnerState.visitCount.map((row) => [...row]);
+  let episodesCompleted = learnerState.episodesCompleted;
+
+  for (let ep = 0; ep < additionalEpisodes; ep++) {
+    episodesCompleted++;
+    const startState = Math.floor(Math.random() * numStates);
+    const startAction = Math.floor(Math.random() * numActions) as Action;
+    const policy = greedyPolicy(q);
+    const traj = generateTrajectory(startState, policy, config, maxSteps, startAction);
+
+    const visited = new Set<string>();
+    for (let t = 0; t < traj.length; t++) {
+      const s = traj[t].state;
+      const a = traj[t].action;
+      const key = `${s},${a}`;
+      if (visitMode === 'first-visit' && visited.has(key)) continue;
+      visited.add(key);
+
+      const g = discountedReturn(traj.slice(t), config.gamma);
+      returnsSum[s][a] += g;
+      visitCount[s][a] += 1;
+      q[s][a] = returnsSum[s][a] / visitCount[s][a];
+    }
+  }
+
+  return {
+    q,
+    returnsSum,
+    visitCount,
+    policy: greedyPolicy(q),
+    episodesCompleted,
+  };
+}
+
+/**
+ * Incremental MC ε-Greedy: continues training from learnerState.
+ * Does NOT reinitialize Q, returns, or counts.
+ * No exploring starts — all actions sampled from ε-greedy policy.
+ */
+export function runMCEpsilonGreedyEpisodes(
+  learnerState: MCLearnerState,
+  config: GridWorldConfig,
+  additionalEpisodes: number,
+  maxSteps: number = 30,
+  epsilonSchedule: EpsilonSchedule = 'fixed',
+  baseEpsilon: number = 0.3,
+  visitMode: 'first-visit' | 'every-visit' = 'first-visit'
+): MCLearnerState {
+  const numStates = config.rows * config.cols;
+  const numActions = 5;
+  const q = learnerState.q.map((row) => [...row]);
+  const returnsSum = learnerState.returnsSum.map((row) => [...row]);
+  const visitCount = learnerState.visitCount.map((row) => [...row]);
+  let episodesCompleted = learnerState.episodesCompleted;
+
+  for (let ep = 0; ep < additionalEpisodes; ep++) {
+    const currentEpsilon = computeEpsilon(epsilonSchedule, baseEpsilon, episodesCompleted);
+    episodesCompleted++;
+
+    // No exploring starts: start from config.startState
+    const startState = config.startState;
+    const policy = epsilonGreedyPolicy(q, currentEpsilon);
+    const traj = generateTrajectory(startState, policy, config, maxSteps);
+
+    const visited = new Set<string>();
+    for (let t = 0; t < traj.length; t++) {
+      const s = traj[t].state;
+      const a = traj[t].action;
+      const key = `${s},${a}`;
+      if (visitMode === 'first-visit' && visited.has(key)) continue;
+      visited.add(key);
+
+      const g = discountedReturn(traj.slice(t), config.gamma);
+      returnsSum[s][a] += g;
+      visitCount[s][a] += 1;
+      q[s][a] = returnsSum[s][a] / visitCount[s][a];
+    }
+  }
+
+  return {
+    q,
+    returnsSum,
+    visitCount,
+    policy: epsilonGreedyPolicy(q, baseEpsilon),
+    episodesCompleted,
+  };
+}
+
+/**
  * Estimate the optimal action-value function q* for reference and learning curves.
  */
 export function estimateTrueActionValues(config: GridWorldConfig): number[][] {
@@ -1520,18 +1716,44 @@ export function mcExploringStarts(
 }
 
 /**
+ * Epsilon schedule type: 'fixed' keeps epsilon constant, 'decaying' uses
+ * epsilon_k = max(epsilonMin, epsilon0 / sqrt(k + 1)) (GLIE-like).
+ */
+export type EpsilonSchedule = 'fixed' | 'decaying';
+
+export function computeEpsilon(
+  schedule: EpsilonSchedule,
+  baseEpsilon: number,
+  episodeIndex: number,
+  epsilonMin: number = 0.05
+): number {
+  if (schedule === 'fixed') return baseEpsilon;
+  // decaying: epsilon_k = max(epsilonMin, epsilon0 / sqrt(k + 1))
+  return Math.max(epsilonMin, baseEpsilon / Math.sqrt(episodeIndex + 1));
+}
+
+/**
  * Monte Carlo epsilon-greedy on-policy control.
+ *
+ * Per textbook Section 5.4 ("Learning without exploring starts"), the initial
+ * action is NOT externally forced. All actions — including the first — are
+ * sampled from the current ε-greedy policy. Exploration is guaranteed by
+ * π(a|s) > 0 for all (s,a).
+ *
+ * Episodes start from config.startState (or a given initial-state distribution).
  */
 export function mcEpsilonGreedy(
   config: GridWorldConfig,
   numEpisodes: number = 200,
   maxSteps: number = 30,
   epsilon: number = 0.3,
-  visitMode: 'first-visit' | 'every-visit' = 'first-visit'
+  visitMode: 'first-visit' | 'every-visit' = 'first-visit',
+  schedule: EpsilonSchedule = 'fixed'
 ): {
   qHistory: number[][][];
   episodeRewards: number[];
   lastTrajectory: { state: number; action: Action; reward: number; nextState: number }[];
+  epsilonHistory: number[];
 } {
   const numStates = config.rows * config.cols;
   const numActions = 5;
@@ -1539,13 +1761,17 @@ export function mcEpsilonGreedy(
   const counts = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
   const qHistory: number[][][] = [q.map((row) => [...row])];
   const episodeRewards: number[] = [];
+  const epsilonHistory: number[] = [];
   let lastTrajectory: { state: number; action: Action; reward: number; nextState: number }[] = [];
 
   for (let ep = 0; ep < numEpisodes; ep++) {
-    const startState = Math.floor(Math.random() * numStates);
-    const startAction = Math.floor(Math.random() * numActions) as Action;
-    const policy = epsilonGreedyPolicy(q, epsilon);
-    const traj = generateTrajectory(startState, policy, config, maxSteps, startAction);
+    const currentEpsilon = computeEpsilon(schedule, epsilon, ep);
+    epsilonHistory.push(currentEpsilon);
+
+    // No exploring starts: start from config.startState, all actions from ε-greedy policy
+    const startState = config.startState;
+    const policy = epsilonGreedyPolicy(q, currentEpsilon);
+    const traj = generateTrajectory(startState, policy, config, maxSteps);
     lastTrajectory = traj;
     episodeRewards.push(traj.reduce((sum, step) => sum + step.reward, 0));
 
@@ -1565,7 +1791,7 @@ export function mcEpsilonGreedy(
     qHistory.push(q.map((row) => [...row]));
   }
 
-  return { qHistory, episodeRewards, lastTrajectory };
+  return { qHistory, episodeRewards, lastTrajectory, epsilonHistory };
 }
 
 function computeImportanceSamplingRatio(
