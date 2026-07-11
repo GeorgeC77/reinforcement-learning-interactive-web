@@ -24,6 +24,7 @@ import {
   epsilonGreedyPolicy,
   greedyPolicy,
   actionValueToStateValue,
+  policyWeightedStateValues,
   mcBasic,
   type MCBasicIteration,
   mcBasicPolicyIteration,
