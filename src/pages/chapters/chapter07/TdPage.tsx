@@ -1,121 +1,115 @@
-import { useState, useMemo, useEffect } from 'react';
-import { Clock, ShieldAlert } from 'lucide-react';
+import { useState, useMemo } from 'react';
+import { Clock, ShieldAlert, Play } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Slider } from '@/components/ui/slider';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import KaTeX from '@/components/KaTeX';
 import FormulaCard from '@/components/FormulaCard';
 import InteractiveDemo from '@/components/InteractiveDemo';
 import GridWorld from '@/components/rl/GridWorld';
-import AlgorithmPlayer from '@/components/AlgorithmPlayer';
-import LineChart from '@/components/LineChart';
 import ConceptAccordion from '@/components/ConceptAccordion';
+import TdDemo from './TdDemo';
 import {
-  DEFAULT_CONFIG,
+  EPISODIC_PATH_CONFIG,
+  ACTION_NAMES,
   deterministicPolicy,
   greedyPolicy,
-  tdZeroPrediction,
-  qLearning,
-  sarsa,
-  nStepSarsa,
+  epsilonGreedyPolicy,
   actionValueToStateValue,
-  policyBellmanResidualV,
-  policyBellmanResidualQ,
-  optimalBellmanResidualQ,
+  tdZeroPrediction,
+  sarsa,
+  qLearning,
+  nStepSarsa,
   type Action,
-  type Policy,
-  type PredictionFrame,
-  type ControlFrame,
+  type TDUpdateRecord,
 } from '@/lib/rl/gridworld';
+import type { AlgorithmKind } from './TdDemo';
 
-type MainAlgorithm = 'td0' | 'sarsa' | 'nstep' | 'qlearning';
+type UnifiedAlgo = Exclude<AlgorithmKind, 'expected' | 'sarsa-lambda' | 'td-lambda'>;
 
-const RIGHT_POLICY: Action[] = [1, 1, 1, 1, 1, 1, 1, 1, 1];
-const HORIZON = 30;
-const SEED = 1;
+const GOAL_POLICY: Action[] = [1, 2, 4, 1, 2, 4, 4, 1, 4];
 
-function frameToView(frame: PredictionFrame | ControlFrame): {
-  values: number[];
-  policy: Policy;
-} {
-  if (frame.kind === 'v') {
-    return { values: frame.values, policy: frame.policy };
+const UNIFIED_ROWS: {
+  key: UnifiedAlgo;
+  label: string;
+  target: string;
+  equation: string;
+  onPolicy: string;
+  bootstrap: string;
+  steps: string;
+  mcRelation: string;
+  dpRelation: string;
+}[] = [
+  {
+    key: 'td0',
+    label: 'TD(0)',
+    target: String.raw`r_{t+1} + \gamma v(s_{t+1})`,
+    equation: String.raw`v = r_\pi + \gamma P_\pi v`,
+    onPolicy: 'on-policy（固定策略）',
+    bootstrap: '是',
+    steps: '1',
+    mcRelation: 'n=1 的 n-step',
+    dpRelation: '用采样转移代替 P_π',
+  },
+  {
+    key: 'sarsa',
+    label: 'Sarsa',
+    target: String.raw`r_{t+1} + \gamma q(s_{t+1}, a_{t+1})`,
+    equation: String.raw`q_\pi = r + \gamma P_\pi q_\pi`,
+    onPolicy: 'on-policy',
+    bootstrap: '是',
+    steps: '1',
+    mcRelation: '用实际执行动作采样',
+    dpRelation: '同策略 Bellman 方程',
+  },
+  {
+    key: 'nstep',
+    label: 'n-step Sarsa',
+    target: String.raw`G_t^{(n)} = \sum_{i=1}^{n}\gamma^{i-1}r_{t+i} + \gamma^n q(s_{t+n}, a_{t+n})`,
+    equation: String.raw`q_\pi = \mathbb{E}_\pi[G_t^{(n)}]`,
+    onPolicy: 'on-policy',
+    bootstrap: '是',
+    steps: 'n',
+    mcRelation: 'n=∞ 时为 MC return',
+    dpRelation: 'n=1 时为 Sarsa',
+  },
+  {
+    key: 'qlearning',
+    label: 'Q-learning',
+    target: String.raw`r_{t+1} + \gamma \max_a q(s_{t+1}, a)`,
+    equation: String.raw`q^* = r + \gamma P \max_a q^*`,
+    onPolicy: 'off-policy',
+    bootstrap: '是',
+    steps: '1',
+    mcRelation: 'target 不依赖实际动作',
+    dpRelation: 'Bellman optimality equation',
+  },
+];
+
+function firstUpdate(algo: UnifiedAlgo): TDUpdateRecord | null {
+  const config = EPISODIC_PATH_CONFIG;
+  const policy = deterministicPolicy(GOAL_POLICY, 5);
+  let result;
+  switch (algo) {
+    case 'td0':
+      result = tdZeroPrediction(policy, config, 0.2, 20, 1, 1);
+      break;
+    case 'sarsa':
+      result = sarsa(config, 0.2, 0.3, 'fixed', 20, 1, 1);
+      break;
+    case 'nstep':
+      result = nStepSarsa(config, 0.2, 0.3, 'fixed', 3, 20, 1, 1);
+      break;
+    case 'qlearning':
+      result = qLearning(config, 0.2, 0.3, 'fixed', 20, 1, 1);
+      break;
+    default:
+      return null;
   }
-  return {
-    values: actionValueToStateValue(frame.qValues),
-    policy: greedyPolicy(frame.qValues),
-  };
+  return result.updates[0] ?? null;
 }
 
 export default function Chapter07TdPage() {
-  const [algorithm, setAlgorithm] = useState<MainAlgorithm>('td0');
-  const [alpha, setAlpha] = useState(0.2);
-  const [epsilon, setEpsilon] = useState(0.3);
-  const [episodes, setEpisodes] = useState(100);
-  const [nStep, setNStep] = useState(3);
-  const [step, setStep] = useState(0);
-
-  const config = DEFAULT_CONFIG;
-
-  useEffect(() => {
-    setStep(0);
-  }, [algorithm, alpha, epsilon, episodes, nStep]);
-
-  const result = useMemo(() => {
-    if (algorithm === 'td0') {
-      const policy = deterministicPolicy(RIGHT_POLICY, 5);
-      return tdZeroPrediction(policy, config, alpha, HORIZON, episodes, SEED);
-    }
-    if (algorithm === 'sarsa') {
-      return sarsa(config, alpha, epsilon, 'fixed', HORIZON, episodes, SEED);
-    }
-    if (algorithm === 'nstep') {
-      return nStepSarsa(config, alpha, epsilon, 'fixed', nStep, HORIZON, episodes, SEED);
-    }
-    return qLearning(config, alpha, epsilon, 'fixed', HORIZON, episodes, SEED);
-  }, [algorithm, alpha, epsilon, episodes, nStep, config]);
-
-  const frames = result.frames;
-  const currentFrame = frames[Math.min(step, frames.length - 1)];
-  const currentView = frameToView(currentFrame);
-  const maxStep = frames.length - 1;
-
-  const convergenceData = useMemo(() => {
-    const policy = deterministicPolicy(RIGHT_POLICY, 5);
-    const td0 = tdZeroPrediction(policy, config, alpha, HORIZON, episodes, SEED).frames.map(
-      (f) => f.values[0]
-    );
-    const sarsaHist = sarsa(config, alpha, epsilon, 'fixed', HORIZON, episodes, SEED).frames.map(
-      (f) => actionValueToStateValue(f.qValues)[0]
-    );
-    const qHist = qLearning(config, alpha, epsilon, 'fixed', HORIZON, episodes, SEED).frames.map(
-      (f) => actionValueToStateValue(f.qValues)[0]
-    );
-    const maxLen = Math.max(td0.length, sarsaHist.length, qHist.length);
-    return Array.from({ length: maxLen }, (_, i) => ({
-      episode: i,
-      td0: td0[i] ?? null,
-      sarsa: sarsaHist[i] ?? null,
-      qlearning: qHist[i] ?? null,
-    }));
-  }, [config, alpha, epsilon, episodes]);
-
-  const tdErrorData = useMemo(() => {
-    return frames.slice(1).map((frame, i) => {
-      let residual = 0;
-      if (frame.kind === 'v') {
-        residual = policyBellmanResidualV(frame.values, frame.policy, config);
-      } else if (algorithm === 'qlearning') {
-        residual = optimalBellmanResidualQ(frame.qValues, config);
-      } else {
-        residual = policyBellmanResidualQ(frame.qValues, frame.behaviorPolicy, config);
-      }
-      return {
-        episode: i + 1,
-        residual,
-      };
-    });
-  }, [frames, config, algorithm]);
+  const [demoAlgo, setDemoAlgo] = useState<UnifiedAlgo>('td0');
+  const demoUpdate = useMemo(() => firstUpdate(demoAlgo), [demoAlgo]);
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-8 space-y-12">
@@ -125,9 +119,7 @@ export default function Chapter07TdPage() {
             <Clock className="w-8 h-8 text-blue-600" />
           </div>
         </div>
-        <h1 className="text-3xl md:text-4xl font-bold text-gray-900 mb-3">
-          第 7 章 时序差分方法
-        </h1>
+        <h1 className="text-3xl md:text-4xl font-bold text-gray-900 mb-3">第 7 章 时序差分方法</h1>
         <p className="text-gray-600 max-w-2xl mx-auto">
           TD(0)、Sarsa、n-step Sarsa、Q-learning：在采样与自举之间架起桥梁。
         </p>
@@ -168,126 +160,118 @@ export default function Chapter07TdPage() {
           }
           description="TD 目标使用下一个状态的最大动作值，即使实际执行的动作不是它。"
         />
-        <FormulaCard
-          title="统一视角"
-          formula={
-            <KaTeX
-              math={String.raw`\text{更新量} = \alpha \bigl[ \underbrace{\text{采样回报}}_{\text{MC}} + \underbrace{\gamma \cdot \text{自举估计}}_{\text{DP}} - \text{当前估计} \bigr]`}
-              display
-            />
-          }
-          description="TD 把蒙特卡洛的采样思想与动态规划的自举思想统一起来。"
-        />
       </section>
 
-      <InteractiveDemo title="TD 算法逐回合演化">
-        <div className="grid lg:grid-cols-[1fr_340px] gap-6">
+      <TdDemo
+        title="TD 算法动态教学"
+        subtitle="逐 transition 观察更新，切换行为策略价值与贪心派生价值，比较 prediction 与控制面板。"
+        algorithms={[
+          { key: 'td0', label: 'TD(0)', category: 'main' },
+          { key: 'sarsa', label: 'Sarsa', category: 'main' },
+          { key: 'nstep', label: 'n-step', category: 'main' },
+          { key: 'qlearning', label: 'Q-learning', category: 'main' },
+        ]}
+        defaultAlgorithm="td0"
+      />
+
+      <InteractiveDemo title="教材 7.5 统一视角">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm border-collapse">
+            <thead>
+              <tr className="bg-gray-100 text-gray-700">
+                <th className="border p-2 text-left">算法</th>
+                <th className="border p-2 text-left">sample target</th>
+                <th className="border p-2 text-left">对应方程</th>
+                <th className="border p-2 text-left">on/off-policy</th>
+                <th className="border p-2 text-left">bootstrap</th>
+                <th className="border p-2 text-left">步数</th>
+                <th className="border p-2 text-left">与 MC 关系</th>
+                <th className="border p-2 text-left">与 DP 关系</th>
+              </tr>
+            </thead>
+            <tbody>
+              {UNIFIED_ROWS.map((row) => (
+                <tr
+                  key={row.key}
+                  className={`cursor-pointer hover:bg-blue-50 ${demoAlgo === row.key ? 'bg-blue-100' : ''}`}
+                  onClick={() => setDemoAlgo(row.key)}
+                >
+                  <td className="border p-2 font-medium">{row.label}</td>
+                  <td className="border p-2">
+                    <KaTeX math={row.target} />
+                  </td>
+                  <td className="border p-2">
+                    <KaTeX math={row.equation} />
+                  </td>
+                  <td className="border p-2">{row.onPolicy}</td>
+                  <td className="border p-2">{row.bootstrap}</td>
+                  <td className="border p-2">{row.steps}</td>
+                  <td className="border p-2">{row.mcRelation}</td>
+                  <td className="border p-2">{row.dpRelation}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="mt-6 grid lg:grid-cols-[1fr_360px] gap-6">
           <div className="flex flex-col items-center justify-center bg-gray-50 rounded-xl p-6 border border-gray-200">
-            <GridWorld
-              config={config}
-              policy={currentView.policy}
-              values={currentView.values}
-              showValues
-              className="max-w-full"
-            />
-            <p className="mt-4 text-sm text-gray-500 text-center">
-              第 {step} 回合后的{displayName(algorithm, nStep)}
-            </p>
+            {demoUpdate ? (
+              <>
+                <GridWorld
+                  config={EPISODIC_PATH_CONFIG}
+                  policy={
+                    demoAlgo === 'td0'
+                      ? deterministicPolicy(GOAL_POLICY, 5)
+                      : demoAlgo === 'qlearning'
+                        ? greedyPolicy(demoUpdate.qAfter!)
+                        : epsilonGreedyPolicy(demoUpdate.qAfter!, 0.3)
+                  }
+                  values={
+                    demoAlgo === 'td0'
+                      ? demoUpdate.valuesAfter!
+                      : actionValueToStateValue(demoUpdate.qAfter!)
+                  }
+                  showValues
+                  highlightState={demoUpdate.state}
+                  highlightNextState={demoUpdate.nextState}
+                  highlightUpdatedState={demoUpdate.state}
+                  highlightAction={demoAlgo === 'td0' ? null : { state: demoUpdate.state, action: demoUpdate.action }}
+                  className="max-w-full"
+                />
+                <p className="mt-4 text-sm text-gray-500 text-center">
+                  {demoAlgo} 第一次更新：s{demoUpdate.state + 1} · {ACTION_NAMES[demoUpdate.action]} → s{demoUpdate.nextState + 1}
+                </p>
+              </>
+            ) : (
+              <p className="text-gray-500">点击表格行播放一次实际更新</p>
+            )}
           </div>
 
           <div className="space-y-4">
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">选择算法</CardTitle>
-              </CardHeader>
-              <CardContent className="grid grid-cols-2 gap-2">
-                {[
-                  { key: 'td0', label: 'TD(0)' },
-                  { key: 'sarsa', label: 'Sarsa' },
-                  { key: 'nstep', label: 'n-step' },
-                  { key: 'qlearning', label: 'Q-learning' },
-                ].map(({ key, label }) => (
-                  <Button
-                    key={key}
-                    variant={algorithm === key ? 'default' : 'outline'}
-                    size="sm"
-                    onClick={() => setAlgorithm(key as MainAlgorithm)}
-                  >
-                    {label}
-                  </Button>
-                ))}
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">超参数</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div>
-                  <div className="text-sm text-gray-600 mb-1">学习率 α</div>
-                  <Slider value={[alpha]} min={0.01} max={0.5} step={0.01} onValueChange={([v]) => setAlpha(v)} />
-                  <div className="mt-1 text-center font-mono text-sm text-gray-700">{alpha.toFixed(2)}</div>
-                </div>
-                {(algorithm === 'sarsa' || algorithm === 'nstep' || algorithm === 'qlearning') && (
-                  <div>
-                    <div className="text-sm text-gray-600 mb-1">探索率 ε</div>
-                    <Slider value={[epsilon]} min={0} max={1} step={0.05} onValueChange={([v]) => setEpsilon(v)} />
-                    <div className="mt-1 text-center font-mono text-sm text-gray-700">{epsilon.toFixed(2)}</div>
-                  </div>
-                )}
-                {algorithm === 'nstep' && (
-                  <div>
-                    <div className="text-sm text-gray-600 mb-1">步数 n</div>
-                    <Slider value={[nStep]} min={1} max={10} step={1} onValueChange={([v]) => setNStep(v)} />
-                    <div className="mt-1 text-center font-mono text-sm text-gray-700">{nStep}</div>
-                  </div>
-                )}
-                <div>
-                  <div className="text-sm text-gray-600 mb-1">训练回合数</div>
-                  <Slider value={[episodes]} min={10} max={300} step={10} onValueChange={([v]) => setEpisodes(v)} />
-                  <div className="mt-1 text-center font-mono text-sm text-gray-700">{episodes}</div>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">回放控制</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <AlgorithmPlayer maxStep={maxStep} currentStep={step} onStepChange={setStep} />
-              </CardContent>
-            </Card>
+            <div className="flex flex-wrap gap-2">
+              {UNIFIED_ROWS.map((row) => (
+                <Button
+                  key={row.key}
+                  size="sm"
+                  variant={demoAlgo === row.key ? 'default' : 'outline'}
+                  onClick={() => setDemoAlgo(row.key)}
+                >
+                  <Play className="w-3 h-3 mr-1" />
+                  {row.label}
+                </Button>
+              ))}
+            </div>
+            <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+              <div className="text-sm text-gray-600 mb-2">高亮 target</div>
+              <KaTeX math={UNIFIED_ROWS.find((r) => r.key === demoAlgo)?.target ?? ''} display />
+            </div>
+            <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+              <div className="text-sm text-gray-600 mb-2">对应方程 / BOE</div>
+              <KaTeX math={UNIFIED_ROWS.find((r) => r.key === demoAlgo)?.equation ?? ''} display />
+            </div>
           </div>
         </div>
-      </InteractiveDemo>
-
-      <InteractiveDemo title="状态值收敛对比">
-        <LineChart
-          data={convergenceData}
-          xKey="episode"
-          xLabel="回合"
-          yLabel="v(s_1)"
-          series={[
-            { key: 'td0', name: 'TD(0)', color: '#2563eb' },
-            { key: 'sarsa', name: 'Sarsa', color: '#ef4444' },
-            { key: 'qlearning', name: 'Q-learning', color: '#22c55e' },
-          ]}
-        />
-      </InteractiveDemo>
-
-      <InteractiveDemo title="单步 TD 误差 / Bellman 残差">
-        <LineChart
-          data={tdErrorData}
-          xKey="episode"
-          xLabel="回合"
-          yLabel="max |δ|"
-          series={[{ key: 'residual', name: '最大单步误差', color: '#8b5cf6' }]}
-        />
-        <p className="mt-2 text-sm text-gray-600">
-          对 TD(0) 计算策略 Bellman 残差；对 Sarsa / n-step Sarsa 计算同策略 Bellman 残差；对 Q-learning 计算 Bellman 最优残差。随着训练进行，该值应逐渐下降。
-        </p>
       </InteractiveDemo>
 
       <section className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 md:p-8">
@@ -301,9 +285,9 @@ export default function Chapter07TdPage() {
                 <ul className="list-disc pl-5 space-y-2">
                   <li>TD 算法是随机逼近求解贝尔曼/贝尔曼最优方程的特例。</li>
                   <li>TD(0) 每步更新，是在线学习的典型代表。</li>
-                  <li>Sarsa 同策略、Q-learning 异策略，两者都收敛到最优策略。</li>
+                  <li>Sarsa 同策略、Q-learning 异策略，更新机制不同。</li>
                   <li>n-step 方法在 TD 和 MC 之间做 bias-variance 权衡。</li>
-                  <li>Expected Sarsa 与 TD(λ)、Sarsa(λ) 见“教材拓展”页面。</li>
+                  <li>Expected Sarsa 与 TD(λ)、Sarsa(λ) 见“教材补充与拓展”页面。</li>
                 </ul>
               ),
             },
@@ -324,17 +308,4 @@ export default function Chapter07TdPage() {
       </section>
     </div>
   );
-}
-
-function displayName(algorithm: MainAlgorithm, nStep: number): string {
-  switch (algorithm) {
-    case 'td0':
-      return 'TD(0) 状态值';
-    case 'sarsa':
-      return 'Sarsa 贪心策略';
-    case 'nstep':
-      return `${nStep}-step Sarsa 贪心策略`;
-    case 'qlearning':
-      return 'Q-learning 贪心策略';
-  }
 }

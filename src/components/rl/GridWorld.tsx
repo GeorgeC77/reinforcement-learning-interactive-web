@@ -15,6 +15,9 @@ export interface GridWorldProps {
   trajectory?: number[];
   currentStep?: number;
   highlightState?: number | null;
+  highlightNextState?: number | null;
+  highlightUpdatedState?: number | null;
+  highlightAction?: { state: number; action: number } | null;
   onCellClick?: (state: number) => void;
   onActionClick?: (state: number, action: number) => void;
   editable?: boolean;
@@ -32,6 +35,9 @@ export default function GridWorld({
   trajectory = [],
   currentStep = -1,
   highlightState = null,
+  highlightNextState = null,
+  highlightUpdatedState = null,
+  highlightAction = null,
   onCellClick,
   onActionClick,
   editable = false,
@@ -66,6 +72,8 @@ export default function GridWorld({
 
   function cellStroke(state: number): string {
     if (state === highlightState) return '#3a7bd5';
+    if (state === highlightNextState) return '#f59e0b';
+    if (state === highlightUpdatedState) return '#22c55e';
     if (state === config.targetState) return '#4caf50';
     if (config.forbiddenStates.includes(state)) return '#e25b5b';
     if (state === config.startState) return '#3a7bd5';
@@ -152,6 +160,9 @@ export default function GridWorld({
                   action={4}
                   prob={policy[state][4]}
                   editable={editable}
+                  highlighted={
+                    highlightAction?.state === state && highlightAction?.action === 4
+                  }
                   onClick={() => onActionClick?.(state, 4)}
                 />
                 {[0, 1, 2, 3].map((action) => (
@@ -162,6 +173,9 @@ export default function GridWorld({
                     action={action}
                     prob={policy[state][action]}
                     editable={editable}
+                    highlighted={
+                      highlightAction?.state === state && highlightAction?.action === action
+                    }
                     onClick={() => onActionClick?.(state, action)}
                   />
                 ))}
@@ -203,6 +217,7 @@ function PolicyArrow({
   action,
   prob,
   editable,
+  highlighted,
   onClick,
 }: {
   x: number;
@@ -210,11 +225,12 @@ function PolicyArrow({
   action: number;
   prob: number;
   editable: boolean;
+  highlighted?: boolean;
   onClick: () => void;
 }) {
   const cx = x + CELL_SIZE / 2;
   const cy = y + CELL_SIZE / 2 + 4;
-  const isSelected = prob > 0;
+  const isSelected = prob > 0 || highlighted;
 
   if (action === 4) {
     // stay indicator: small square at bottom-right, does not block arrows
@@ -242,8 +258,8 @@ function PolicyArrow({
   const angle = [-90, 0, 90, 180][action] * (Math.PI / 180);
   const x2 = cx + len * Math.cos(angle);
   const y2 = cy + len * Math.sin(angle);
-  const color = isSelected ? '#1a3a5c' : '#b0b8c0';
-  const opacity = isSelected ? 1 : 0.45;
+  const color = highlighted ? '#ef4444' : isSelected ? '#1a3a5c' : '#b0b8c0';
+  const opacity = highlighted ? 1 : isSelected ? 1 : 0.45;
   const markerId = `arrowhead-${action}-${isSelected ? 1 : 0}-${x}-${y}`;
 
   return (

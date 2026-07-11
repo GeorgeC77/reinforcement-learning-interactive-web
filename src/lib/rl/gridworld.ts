@@ -529,7 +529,7 @@ export function greedyPolicy(qValues: number[][]): Policy {
       .map((value, idx) => ({ value, idx }))
       .filter(({ value }) => Math.abs(value - maxQ) < 1e-9)
       .map(({ idx }) => idx);
-    const action = bestActions[Math.floor(Math.random() * bestActions.length)];
+    const action = bestActions[0];
     const dist = new Array(5).fill(0);
     dist[action] = 1;
     return dist;
@@ -556,7 +556,7 @@ export function greedyPolicyWithTerminal(
       .map((value, idx) => ({ value, idx }))
       .filter(({ value }) => Math.abs(value - maxQ) < 1e-9)
       .map(({ idx }) => idx);
-    const action = bestActions[Math.floor(Math.random() * bestActions.length)];
+    const action = bestActions[0];
     dist[action] = 1;
     return dist;
   });
