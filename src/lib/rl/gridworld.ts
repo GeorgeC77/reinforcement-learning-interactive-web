@@ -1657,8 +1657,6 @@ export function runMCEpsilonGreedyEpisodes(
   baseEpsilon: number = 0.3,
   visitMode: 'first-visit' | 'every-visit' = 'first-visit'
 ): MCLearnerState {
-  const numStates = config.rows * config.cols;
-  const numActions = 5;
   const q = learnerState.q.map((row) => [...row]);
   const returnsSum = learnerState.returnsSum.map((row) => [...row]);
   const visitCount = learnerState.visitCount.map((row) => [...row]);
@@ -1699,7 +1697,6 @@ export function runMCEpsilonGreedyEpisodes(
     episodesCompleted,
     currentEpsilon,
     lastTrajectory,
-    currentEpsilon,
   };
 }
 
