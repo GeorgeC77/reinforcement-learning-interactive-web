@@ -14,11 +14,11 @@ import GridWorld from '@/components/rl/GridWorld';
 import LineChart from '@/components/LineChart';
 import {
   DEFAULT_CONFIG, ACTION_NAMES,
-  type Action, type Policy,
+  type Policy,
   epsilonGreedyPolicy, greedyPolicy, policyWeightedStateValues,
   mcBasic, type MCBasicIteration, mcBasicPolicyIteration,
   createMCLearnerState, runMCExploringStartsEpisodes, runMCEpsilonGreedyEpisodes,
-  type MCLearnerState, type EpsilonSchedule,
+  type MCLearnerState, type EpsilonSchedule, type TrajectoryStep,
   estimateTrueActionValues, solveStateValues, computeQValues, qTableRMSE,
 } from '@/lib/rl/gridworld';
 
@@ -238,7 +238,7 @@ interface MCDemoShellProps {
   visitMode: VisitMode; onVisitModeChange: (mode: VisitMode) => void;
   onRun: (n: number) => void; onReset: () => void;
   chartData: { episode: number; rmse: number }[];
-  lastTrajectory: { state: number; action: Action; reward: number; nextState: number }[];
+  lastTrajectory: TrajectoryStep[];
   epsilon?: number; onEpsilonChange?: (v: number) => void;
   schedule?: EpsilonSchedule; onScheduleChange?: (s: EpsilonSchedule) => void;
   currentEpsilon?: number; horizonT?: number; onHorizonTChange?: (v: number) => void;

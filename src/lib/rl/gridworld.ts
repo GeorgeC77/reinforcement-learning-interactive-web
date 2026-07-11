@@ -1565,6 +1565,13 @@ export function mcBasicPolicyIteration(
  * Persistent learner state for incremental MC training.
  * Allows "run N more episodes" to continue from where the previous run left off.
  */
+export type TrajectoryStep = {
+  state: number;
+  action: Action;
+  reward: number;
+  nextState: number;
+};
+
 export interface MCLearnerState {
   q: number[][];
   returnsSum: number[][];
@@ -1572,7 +1579,7 @@ export interface MCLearnerState {
   policy: Policy;
   episodesCompleted: number;
   currentEpsilon: number;
-  lastTrajectory: { state: number; action: Action; reward: number; nextState: number }[];
+  lastTrajectory: TrajectoryStep[];
 }
 
 export function createMCLearnerState(config: GridWorldConfig, initialEpsilon: number = 0): MCLearnerState {
@@ -1725,60 +1732,6 @@ export function qTableRMSE(q: number[][], qRef: number[][]): number {
   return count === 0 ? 0 : Math.sqrt(sum / count);
 }
 
-/**
- * Monte Carlo Exploring Starts control.
- * Returns the Q-value history (one entry per episode), episode total rewards,
- * and the last sampled trajectory for inspection.
- */
-export function mcExploringStarts(
-  config: GridWorldConfig,
-  numEpisodes: number = 200,
-  maxSteps: number = 30,
-  visitMode: 'first-visit' | 'every-visit' = 'first-visit'
-): {
-  qHistory: number[][][];
-  episodeRewards: number[];
-  lastTrajectory: { state: number; action: Action; reward: number; nextState: number }[];
-} {
-  const numStates = config.rows * config.cols;
-  const numActions = 5;
-  let q = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
-  const counts = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
-  const qHistory: number[][][] = [q.map((row) => [...row])];
-  const episodeRewards: number[] = [];
-  let lastTrajectory: { state: number; action: Action; reward: number; nextState: number }[] = [];
-
-  for (let ep = 0; ep < numEpisodes; ep++) {
-    const startState = Math.floor(Math.random() * numStates);
-    const startAction = Math.floor(Math.random() * numActions) as Action;
-    const policy = greedyPolicy(q);
-    const traj = generateTrajectory(startState, policy, config, maxSteps, startAction);
-    lastTrajectory = traj;
-    episodeRewards.push(traj.reduce((sum, step) => sum + step.reward, 0));
-
-    const visited = new Set<string>();
-    for (let t = 0; t < traj.length; t++) {
-      const s = traj[t].state;
-      const a = traj[t].action;
-      const key = `${s},${a}`;
-      if (visitMode === 'first-visit' && visited.has(key)) continue;
-      visited.add(key);
-
-      const g = discountedReturn(traj.slice(t), config.gamma);
-      counts[s][a] += 1;
-      const alpha = 1 / counts[s][a];
-      q[s][a] += alpha * (g - q[s][a]);
-    }
-    qHistory.push(q.map((row) => [...row]));
-  }
-
-  return { qHistory, episodeRewards, lastTrajectory };
-}
-
-/**
- * Epsilon schedule type: 'fixed' keeps epsilon constant, 'decaying' uses
- * epsilon_k = max(epsilonMin, epsilon0 / sqrt(k + 1)) (GLIE-like).
- */
 export type EpsilonSchedule = 'fixed' | 'decaying-with-floor' | 'glie';
 
 export function computeEpsilon(
@@ -1793,68 +1746,6 @@ export function computeEpsilon(
   }
   // glie: epsilon_k = epsilon0 / sqrt(k + 1) -> 0
   return baseEpsilon / Math.sqrt(episodeIndex + 1);
-}
-
-/**
- * Monte Carlo epsilon-greedy on-policy control.
- *
- * Per textbook Section 5.4 ("Learning without exploring starts"), the initial
- * action is NOT externally forced. All actions — including the first — are
- * sampled from the current ε-greedy policy. Exploration is guaranteed by
- * π(a|s) > 0 for all (s,a).
- *
- * Episodes start from config.startState (or a given initial-state distribution).
- */
-export function mcEpsilonGreedy(
-  config: GridWorldConfig,
-  numEpisodes: number = 200,
-  maxSteps: number = 30,
-  epsilon: number = 0.3,
-  visitMode: 'first-visit' | 'every-visit' = 'first-visit',
-  schedule: EpsilonSchedule = 'fixed'
-): {
-  qHistory: number[][][];
-  episodeRewards: number[];
-  lastTrajectory: { state: number; action: Action; reward: number; nextState: number }[];
-  epsilonHistory: number[];
-} {
-  const numStates = config.rows * config.cols;
-  const numActions = 5;
-  let q = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
-  const counts = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
-  const qHistory: number[][][] = [q.map((row) => [...row])];
-  const episodeRewards: number[] = [];
-  const epsilonHistory: number[] = [];
-  let lastTrajectory: { state: number; action: Action; reward: number; nextState: number }[] = [];
-
-  for (let ep = 0; ep < numEpisodes; ep++) {
-    const currentEpsilon = computeEpsilon(schedule, epsilon, ep);
-    epsilonHistory.push(currentEpsilon);
-
-    // No exploring starts: start from config.startState, all actions from ε-greedy policy
-    const startState = config.startState;
-    const policy = epsilonGreedyPolicy(q, currentEpsilon);
-    const traj = generateTrajectory(startState, policy, config, maxSteps);
-    lastTrajectory = traj;
-    episodeRewards.push(traj.reduce((sum, step) => sum + step.reward, 0));
-
-    const visited = new Set<string>();
-    for (let t = 0; t < traj.length; t++) {
-      const s = traj[t].state;
-      const a = traj[t].action;
-      const key = `${s},${a}`;
-      if (visitMode === 'first-visit' && visited.has(key)) continue;
-      visited.add(key);
-
-      const g = discountedReturn(traj.slice(t), config.gamma);
-      counts[s][a] += 1;
-      const alpha = 1 / counts[s][a];
-      q[s][a] += alpha * (g - q[s][a]);
-    }
-    qHistory.push(q.map((row) => [...row]));
-  }
-
-  return { qHistory, episodeRewards, lastTrajectory, epsilonHistory };
 }
 
 function computeImportanceSamplingRatio(
