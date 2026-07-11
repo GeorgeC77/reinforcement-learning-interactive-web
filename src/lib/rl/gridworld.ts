@@ -298,14 +298,21 @@ export function normalizePolicy(policy: Policy): Policy {
   });
 }
 
-export function sampleAction(probs: number[]): Action {
-  const r = Math.random();
+export function sampleActionWithRng(
+  probs: number[],
+  rng: () => number
+): Action {
+  const r = rng();
   let cum = 0;
   for (let i = 0; i < probs.length; i++) {
     cum += probs[i];
     if (r <= cum) return i as Action;
   }
   return (probs.length - 1) as Action;
+}
+
+export function sampleAction(probs: number[]): Action {
+  return sampleActionWithRng(probs, Math.random);
 }
 
 /**

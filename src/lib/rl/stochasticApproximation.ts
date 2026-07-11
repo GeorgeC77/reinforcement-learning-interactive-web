@@ -1,8 +1,8 @@
 /**
  * Stochastic approximation utilities for Chapter 6.
  *
- * All functions support an optional seed so that different algorithms can be
- * compared on the exact same random samples / noise sequence.
+ * All randomness is driven by a seeded mulberry32 generator so that different
+ * algorithms, trajectories and noise sequences can be reproduced exactly.
  */
 
 import {
@@ -10,8 +10,7 @@ import {
   type Policy,
   type Action,
   step,
-  sampleAction,
-  isTerminal,
+  sampleActionWithRng,
 } from './gridworld';
 
 // ---------------------------------------------------------------------------
@@ -33,8 +32,8 @@ function makeRng(seed: number): () => number {
 }
 
 export function normalRandom(rng: () => number, mean: number, std: number): number {
-  // Box-Muller
-  const u1 = rng();
+  // Box-Muller.  Guard against u1 == 0 so log(0) cannot occur.
+  const u1 = Math.max(rng(), Number.EPSILON);
   const u2 = rng();
   const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
   return mean + std * z;
@@ -108,6 +107,16 @@ function evaluateG(w: number, wStar: number, gName: RMFunction): number {
   return delta;
 }
 
+export function evaluateGPrime(w: number, wStar: number, gName: RMFunction): number {
+  const delta = w - wStar;
+  if (gName === 'tanh') {
+    // derivative of tanh(x) = sech^2(x) = 1 / cosh^2(x)
+    const cosh = (Math.exp(delta) + Math.exp(-delta)) / 2;
+    return 1 / (cosh * cosh);
+  }
+  return 1;
+}
+
 export function robbinsMonroSequence(
   wStar: number,
   initialW: number,
@@ -147,7 +156,7 @@ export function checkStepSizeCondition(p: number): StepSizeCondition {
     return {
       label: 'p ≤ 0.5',
       description:
-        'Σ α_k 发散，Σ α_k² 发散。不满足经典 Robbins-Monro 条件：噪声难以充分消退。',
+        'Σ α_k 发散，Σ α_k² 发散。不满足经典 Robbins-Monro 步长条件：噪声难以充分消退。',
       valid: false,
     };
   }
@@ -163,12 +172,30 @@ export function checkStepSizeCondition(p: number): StepSizeCondition {
     label: 'p > 1',
     description:
       'Σ α_k 收敛，Σ α_k² 收敛。不满足经典条件：累计更新量可能不足，难以保证收敛。',
-      valid: false,
+    valid: false,
   };
 }
 
 export function powerStepSizes(n: number, power: number, offset = 1): number[] {
   return Array.from({ length: n }, (_, i) => 1 / Math.pow(i + offset, power));
+}
+
+export function partialSumCondition(
+  n: number,
+  power: number
+): { sum: number; sumSquares: number; diverges: boolean } {
+  let sum = 0;
+  let sumSquares = 0;
+  for (let i = 1; i <= n; i++) {
+    const a = 1 / Math.pow(i, power);
+    sum += a;
+    sumSquares += a * a;
+  }
+  return {
+    sum,
+    sumSquares,
+    diverges: power <= 1,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -180,12 +207,21 @@ export type GDMode = 'bgd' | 'mbgd' | 'sgd';
 export interface GDStep {
   epoch: number;
   step: number;
-  w: number;
-  loss: number;
-  gradient: number;
+  wBefore: number;
+  wAfter: number;
+  batchGradient: number;
+  fullGradient: number;
+  gradientNoise: number;
+  squaredGradientNoise: number;
+  batchLossBefore: number;
+  fullLossBefore: number;
+  fullLossAfter: number;
   batchSize: number;
   samplesProcessed: number;
-  gradientVariance: number;
+}
+
+export function fullObjective(dataset: number[], w: number): number {
+  return dataset.reduce((sum, x) => sum + 0.5 * (w - x) ** 2, 0) / dataset.length;
 }
 
 function shuffleArray<T>(arr: T[], rng: () => number): T[] {
@@ -218,51 +254,118 @@ export function meanEstimationGradientDescent(
     const shuffled = shuffleArray(dataset, rng);
 
     if (mode === 'bgd') {
-      const grads = dataset.map((x) => w - x);
-      const gradient = grads.reduce((a, b) => a + b, 0) / n;
-      const gradientVariance =
-        grads.reduce((sum, g) => sum + Math.pow(g - gradient, 2), 0) / n;
-      const loss = grads.reduce((sum, g) => sum + g * g, 0) / (2 * n);
-      w -= alpha * gradient;
+      const wBefore = w;
+      const fullGradient = dataset.reduce((sum, x) => sum + (wBefore - x), 0) / n;
+      const batchGradient = fullGradient;
+      const gradientNoise = batchGradient - fullGradient;
+      const squaredGradientNoise = gradientNoise ** 2;
+      const batchLossBefore = fullObjective(dataset, wBefore);
+      const fullLossBefore = batchLossBefore;
+      const wAfter = wBefore - alpha * batchGradient;
+      const fullLossAfter = fullObjective(dataset, wAfter);
+      w = wAfter;
       samplesProcessed += n;
       step++;
       history.push({
         epoch,
         step,
-        w,
-        loss,
-        gradient,
+        wBefore,
+        wAfter,
+        batchGradient,
+        fullGradient,
+        gradientNoise,
+        squaredGradientNoise,
+        batchLossBefore,
+        fullLossBefore,
+        fullLossAfter,
         batchSize: n,
         samplesProcessed,
-        gradientVariance,
       });
       continue;
     }
 
     for (let i = 0; i < n; i += effectiveBatchSize) {
       const batch = shuffled.slice(i, i + effectiveBatchSize);
-      const grads = batch.map((x) => w - x);
-      const gradient = grads.reduce((a, b) => a + b, 0) / batch.length;
-      const gradientVariance =
-        grads.reduce((sum, g) => sum + Math.pow(g - gradient, 2), 0) / batch.length;
-      const loss = grads.reduce((sum, g) => sum + g * g, 0) / (2 * batch.length);
-      w -= alpha * gradient;
+      const wBefore = w;
+      const fullGradient = dataset.reduce((sum, x) => sum + (wBefore - x), 0) / n;
+      const batchGradient = batch.reduce((sum, x) => sum + (wBefore - x), 0) / batch.length;
+      const gradientNoise = batchGradient - fullGradient;
+      const squaredGradientNoise = gradientNoise ** 2;
+      const batchLossBefore = batch.reduce((sum, x) => sum + 0.5 * (wBefore - x) ** 2, 0) / batch.length;
+      const fullLossBefore = fullObjective(dataset, wBefore);
+      const wAfter = wBefore - alpha * batchGradient;
+      const fullLossAfter = fullObjective(dataset, wAfter);
+      w = wAfter;
       samplesProcessed += batch.length;
       step++;
       history.push({
         epoch,
         step,
-        w,
-        loss,
-        gradient,
+        wBefore,
+        wAfter,
+        batchGradient,
+        fullGradient,
+        gradientNoise,
+        squaredGradientNoise,
+        batchLossBefore,
+        fullLossBefore,
+        fullLossAfter,
         batchSize: batch.length,
         samplesProcessed,
-        gradientVariance,
       });
     }
   }
 
   return history;
+}
+
+export interface FixedWNoiseEstimate {
+  w: number;
+  meanBatchGradient: number;
+  varianceOfBatchGradients: number;
+}
+
+/**
+ * Estimate Var[g_B(w)] for a fixed w by repeatedly sampling batches.
+ * Useful for explaining why SGD has high gradient noise while BGD has none.
+ */
+export function estimateBatchGradientVariance(
+  dataset: number[],
+  w: number,
+  mode: Exclude<GDMode, 'bgd'>,
+  batchSize: number,
+  numSamples: number,
+  seed: number
+): FixedWNoiseEstimate {
+  const rng = makeRng(seed);
+  const n = dataset.length;
+  const effectiveBatchSize = mode === 'sgd' ? 1 : Math.min(batchSize, n);
+  const gradients: number[] = [];
+
+  for (let i = 0; i < numSamples; i++) {
+    const shuffled = shuffleArray(dataset, rng);
+    const batch = shuffled.slice(0, effectiveBatchSize);
+    const g = batch.reduce((sum, x) => sum + (w - x), 0) / batch.length;
+    gradients.push(g);
+  }
+
+  const mean = gradients.reduce((a, b) => a + b, 0) / gradients.length;
+  const variance =
+    gradients.reduce((sum, g) => sum + (g - mean) ** 2, 0) / gradients.length;
+
+  return { w, meanBatchGradient: mean, varianceOfBatchGradients: variance };
+}
+
+export function movingAverage(values: number[], window: number): number[] {
+  const result: number[] = [];
+  const w = Math.max(1, Math.min(window, values.length));
+  let sum = 0;
+  for (let i = 0; i < values.length; i++) {
+    sum += values[i];
+    if (i >= w) sum -= values[i - w];
+    result.push(sum / Math.min(i + 1, w));
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -287,18 +390,11 @@ export function tdBridgeStep(
   policy: Policy,
   v: number[],
   alpha: number,
-  seed: number
-): { step: TDBridgeStep; vNew: number[] } {
-  const rng = makeRng(seed);
-  const numStates = config.rows * config.cols;
-  let state: number;
-  // Try to avoid starting in terminal state
-  for (let attempts = 0; attempts < 10; attempts++) {
-    state = Math.floor(rng() * numStates);
-    if (!isTerminal(state, config)) break;
-  }
-  state = state!;
-  const action = sampleAction(policy[state]);
+  currentState: number,
+  rng: () => number
+): { step: TDBridgeStep; vNew: number[]; nextCurrentState: number } {
+  const state = currentState;
+  const action = sampleActionWithRng(policy[state], rng);
   const result = step(state, action, config);
 
   const vOld = v[state];
@@ -309,6 +405,8 @@ export function tdBridgeStep(
 
   const vNew = [...v];
   vNew[state] = updated;
+
+  const nextCurrentState = result.done ? config.startState : result.nextState;
 
   return {
     step: {
@@ -324,5 +422,38 @@ export function tdBridgeStep(
       vNew: updated,
     },
     vNew,
+    nextCurrentState,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Tab 6: Dvoretzky convergence theorem demonstration
+// ---------------------------------------------------------------------------
+
+export interface DvoretzkyStep {
+  k: number;
+  delta: number;
+  alpha: number;
+  beta: number;
+  noise: number;
+}
+
+export function dvoretzkyErrorSequence(
+  initialDelta: number,
+  alphas: number[],
+  betas: number[],
+  noiseStd: number,
+  seed: number
+): DvoretzkyStep[] {
+  const rng = makeRng(seed);
+  const history: DvoretzkyStep[] = [];
+  let delta = initialDelta;
+  for (let k = 0; k < alphas.length; k++) {
+    const alpha = alphas[k];
+    const beta = betas[k];
+    const noise = normalRandom(rng, 0, noiseStd);
+    delta = (1 - alpha) * delta + beta * noise;
+    history.push({ k, delta, alpha, beta, noise });
+  }
+  return history;
 }
