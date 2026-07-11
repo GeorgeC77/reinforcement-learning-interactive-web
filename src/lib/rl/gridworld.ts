@@ -1512,6 +1512,7 @@ export function mcBasicPolicyIteration(
   iterations: MCBasicIteration[];
   finalPolicy: Policy;
   finalQ: number[][];
+  finalQPolicy: Policy;
 } {
   const numStates = config.rows * config.cols;
   const numActions = 5;
@@ -1571,6 +1572,7 @@ export interface MCLearnerState {
   policy: Policy;
   episodesCompleted: number;
   currentEpsilon: number;
+  lastTrajectory: { state: number; action: Action; reward: number; nextState: number }[];
 }
 
 export function createMCLearnerState(config: GridWorldConfig, initialEpsilon: number = 0): MCLearnerState {
@@ -1583,6 +1585,7 @@ export function createMCLearnerState(config: GridWorldConfig, initialEpsilon: nu
     policy: randomPolicy(numStates, numActions),
     episodesCompleted: 0,
     currentEpsilon: initialEpsilon,
+    lastTrajectory: [],
   };
 }
 
@@ -1604,6 +1607,7 @@ export function runMCExploringStartsEpisodes(
   const returnsSum = learnerState.returnsSum.map((row) => [...row]);
   const visitCount = learnerState.visitCount.map((row) => [...row]);
   let episodesCompleted = learnerState.episodesCompleted;
+  let lastTrajectory = learnerState.lastTrajectory;
 
   for (let ep = 0; ep < additionalEpisodes; ep++) {
     episodesCompleted++;
@@ -1611,6 +1615,7 @@ export function runMCExploringStartsEpisodes(
     const startAction = Math.floor(Math.random() * numActions) as Action;
     const policy = greedyPolicy(q);
     const traj = generateTrajectory(startState, policy, config, maxSteps, startAction);
+    lastTrajectory = traj;
 
     const visited = new Set<string>();
     for (let t = 0; t < traj.length; t++) {
@@ -1634,6 +1639,7 @@ export function runMCExploringStartsEpisodes(
     policy: greedyPolicy(q),
     episodesCompleted,
     currentEpsilon: 0,
+    lastTrajectory,
   };
 }
 
@@ -1658,6 +1664,7 @@ export function runMCEpsilonGreedyEpisodes(
   const visitCount = learnerState.visitCount.map((row) => [...row]);
   let episodesCompleted = learnerState.episodesCompleted;
   let currentEpsilon = learnerState.currentEpsilon;
+  let lastTrajectory = learnerState.lastTrajectory;
 
   for (let ep = 0; ep < additionalEpisodes; ep++) {
     currentEpsilon = computeEpsilon(epsilonSchedule, baseEpsilon, episodesCompleted);
@@ -1667,6 +1674,7 @@ export function runMCEpsilonGreedyEpisodes(
     const startState = config.startState;
     const policy = epsilonGreedyPolicy(q, currentEpsilon);
     const traj = generateTrajectory(startState, policy, config, maxSteps);
+    lastTrajectory = traj;
 
     const visited = new Set<string>();
     for (let t = 0; t < traj.length; t++) {
@@ -1689,6 +1697,8 @@ export function runMCEpsilonGreedyEpisodes(
     visitCount,
     policy: epsilonGreedyPolicy(q, currentEpsilon),
     episodesCompleted,
+    currentEpsilon,
+    lastTrajectory,
     currentEpsilon,
   };
 }
