@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
-import { Clock, ShieldAlert } from 'lucide-react';
+import { FlaskConical, ShieldAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -14,21 +14,19 @@ import {
   DEFAULT_CONFIG,
   deterministicPolicy,
   greedyPolicy,
-  tdZeroPrediction,
-  qLearning,
-  sarsa,
-  nStepSarsa,
+  expectedSarsa,
+  sarsaLambda,
+  tdLambdaPrediction,
   actionValueToStateValue,
   policyBellmanResidualV,
   policyBellmanResidualQ,
-  optimalBellmanResidualQ,
   type Action,
   type Policy,
   type PredictionFrame,
   type ControlFrame,
 } from '@/lib/rl/gridworld';
 
-type MainAlgorithm = 'td0' | 'sarsa' | 'nstep' | 'qlearning';
+type ExtAlgorithm = 'expected' | 'sarsa-lambda' | 'td-lambda';
 
 const RIGHT_POLICY: Action[] = [1, 1, 1, 1, 1, 1, 1, 1, 1];
 const HORIZON = 30;
@@ -47,33 +45,30 @@ function frameToView(frame: PredictionFrame | ControlFrame): {
   };
 }
 
-export default function Chapter07TdPage() {
-  const [algorithm, setAlgorithm] = useState<MainAlgorithm>('td0');
+export default function Chapter07TdExtensionsPage() {
+  const [algorithm, setAlgorithm] = useState<ExtAlgorithm>('expected');
   const [alpha, setAlpha] = useState(0.2);
   const [epsilon, setEpsilon] = useState(0.3);
+  const [lambda, setLambda] = useState(0.8);
   const [episodes, setEpisodes] = useState(100);
-  const [nStep, setNStep] = useState(3);
   const [step, setStep] = useState(0);
 
   const config = DEFAULT_CONFIG;
 
   useEffect(() => {
     setStep(0);
-  }, [algorithm, alpha, epsilon, episodes, nStep]);
+  }, [algorithm, alpha, epsilon, lambda, episodes]);
 
   const result = useMemo(() => {
-    if (algorithm === 'td0') {
+    if (algorithm === 'td-lambda') {
       const policy = deterministicPolicy(RIGHT_POLICY, 5);
-      return tdZeroPrediction(policy, config, alpha, HORIZON, episodes, SEED);
+      return tdLambdaPrediction(policy, config, alpha, lambda, HORIZON, episodes, SEED);
     }
-    if (algorithm === 'sarsa') {
-      return sarsa(config, alpha, epsilon, 'fixed', HORIZON, episodes, SEED);
+    if (algorithm === 'sarsa-lambda') {
+      return sarsaLambda(config, alpha, epsilon, 'fixed', lambda, HORIZON, episodes, SEED);
     }
-    if (algorithm === 'nstep') {
-      return nStepSarsa(config, alpha, epsilon, 'fixed', nStep, HORIZON, episodes, SEED);
-    }
-    return qLearning(config, alpha, epsilon, 'fixed', HORIZON, episodes, SEED);
-  }, [algorithm, alpha, epsilon, episodes, nStep, config]);
+    return expectedSarsa(config, alpha, epsilon, 'fixed', HORIZON, episodes, SEED);
+  }, [algorithm, alpha, epsilon, lambda, episodes, config]);
 
   const frames = result.frames;
   const currentFrame = frames[Math.min(step, frames.length - 1)];
@@ -81,32 +76,35 @@ export default function Chapter07TdPage() {
   const maxStep = frames.length - 1;
 
   const convergenceData = useMemo(() => {
-    const policy = deterministicPolicy(RIGHT_POLICY, 5);
-    const td0 = tdZeroPrediction(policy, config, alpha, HORIZON, episodes, SEED).frames.map(
-      (f) => f.values[0]
-    );
-    const sarsaHist = sarsa(config, alpha, epsilon, 'fixed', HORIZON, episodes, SEED).frames.map(
+    const expectedHist = expectedSarsa(config, alpha, epsilon, 'fixed', HORIZON, episodes, SEED).frames.map(
       (f) => actionValueToStateValue(f.qValues)[0]
     );
-    const qHist = qLearning(config, alpha, epsilon, 'fixed', HORIZON, episodes, SEED).frames.map(
+    const sarsaLambdaHist = sarsaLambda(config, alpha, epsilon, 'fixed', lambda, HORIZON, episodes, SEED).frames.map(
       (f) => actionValueToStateValue(f.qValues)[0]
     );
-    const maxLen = Math.max(td0.length, sarsaHist.length, qHist.length);
+    const tdLambdaHist = tdLambdaPrediction(
+      deterministicPolicy(RIGHT_POLICY, 5),
+      config,
+      alpha,
+      lambda,
+      HORIZON,
+      episodes,
+      SEED
+    ).frames.map((f) => f.values[0]);
+    const maxLen = Math.max(expectedHist.length, sarsaLambdaHist.length, tdLambdaHist.length);
     return Array.from({ length: maxLen }, (_, i) => ({
       episode: i,
-      td0: td0[i] ?? null,
-      sarsa: sarsaHist[i] ?? null,
-      qlearning: qHist[i] ?? null,
+      expected: expectedHist[i] ?? null,
+      sarsaLambda: sarsaLambdaHist[i] ?? null,
+      tdLambda: tdLambdaHist[i] ?? null,
     }));
-  }, [config, alpha, epsilon, episodes]);
+  }, [config, alpha, epsilon, lambda, episodes]);
 
   const tdErrorData = useMemo(() => {
     return frames.slice(1).map((frame, i) => {
       let residual = 0;
       if (frame.kind === 'v') {
         residual = policyBellmanResidualV(frame.values, frame.policy, config);
-      } else if (algorithm === 'qlearning') {
-        residual = optimalBellmanResidualQ(frame.qValues, config);
       } else {
         residual = policyBellmanResidualQ(frame.qValues, frame.behaviorPolicy, config);
       }
@@ -121,15 +119,15 @@ export default function Chapter07TdPage() {
     <div className="max-w-5xl mx-auto px-4 py-8 space-y-12">
       <section className="text-center py-10 bg-white rounded-2xl shadow-sm border border-gray-200">
         <div className="flex justify-center mb-4">
-          <div className="w-14 h-14 bg-blue-100 rounded-xl flex items-center justify-center">
-            <Clock className="w-8 h-8 text-blue-600" />
+          <div className="w-14 h-14 bg-purple-100 rounded-xl flex items-center justify-center">
+            <FlaskConical className="w-8 h-8 text-purple-600" />
           </div>
         </div>
         <h1 className="text-3xl md:text-4xl font-bold text-gray-900 mb-3">
-          第 7 章 时序差分方法
+          第 7 章 教材拓展
         </h1>
         <p className="text-gray-600 max-w-2xl mx-auto">
-          TD(0)、Sarsa、n-step Sarsa、Q-learning：在采样与自举之间架起桥梁。
+          Expected Sarsa、TD(λ) 与 Sarsa(λ) 是教材之外的延伸内容，用于理解更稳定或更高效的 TD 变体。
         </p>
         <p className="mt-4 text-sm text-amber-700 flex items-center justify-center gap-2">
           <ShieldAlert className="w-4 h-4" />
@@ -139,48 +137,38 @@ export default function Chapter07TdPage() {
 
       <section className="space-y-4">
         <FormulaCard
-          title="TD(0) 预测"
-          formula={<KaTeX math={String.raw`v(s_t) \leftarrow v(s_t) + \alpha \bigl[ r_{t+1} + \gamma v(s_{t+1}) - v(s_t) \bigr]`} display />}
-          description="每接收一个转移样本就更新一次状态值，是最简单的自举方法。"
-        />
-        <FormulaCard
-          title="Sarsa（同策略控制）"
-          formula={<KaTeX math={String.raw`q(s_t,a_t) \leftarrow q(s_t,a_t) + \alpha \bigl[ r_{t+1} + \gamma q(s_{t+1},a_{t+1}) - q(s_t,a_t) \bigr]`} display />}
-          description="TD 目标中的下一个动作 a_{t+1} 来自当前策略实际采样。"
-        />
-        <FormulaCard
-          title="n-step Sarsa"
+          title="Expected Sarsa"
           formula={
             <KaTeX
-              math={String.raw`G_t^{(n)} = r_{t+1} + \gamma r_{t+2} + \cdots + \gamma^{n-1} r_{t+n} + \gamma^n q(s_{t+n}, a_{t+n})`}
+              math={String.raw`q(s_t,a_t) \leftarrow q(s_t,a_t) + \alpha \bigl[ r_{t+1} + \gamma \sum_a \pi(a|s_{t+1}) q(s_{t+1},a) - q(s_t,a_t) \bigr]`}
               display
             />
           }
-          description="在 TD（n=1）和 MC（n=∞）之间做 bias-variance 权衡。"
+          description="TD 目标使用下一状态的动作期望，通常比 Sarsa 更稳定。"
         />
         <FormulaCard
-          title="Q-learning（异策略控制）"
+          title="TD(λ) 预测"
           formula={
             <KaTeX
-              math={String.raw`q(s_t,a_t) \leftarrow q(s_t,a_t) + \alpha \bigl[ r_{t+1} + \gamma \max_a q(s_{t+1},a) - q(s_t,a_t) \bigr]`}
+              math={String.raw`\delta_t = r_{t+1} + \gamma v(s_{t+1}) - v(s_t), \quad E_t(s) = \gamma \lambda E_{t-1}(s) + \mathbf{1}_{s=s_t}`}
               display
             />
           }
-          description="TD 目标使用下一个状态的最大动作值，即使实际执行的动作不是它。"
+          description="为每个状态维护资格迹，把当前 TD 误差按迹分配给近期访问过的状态。"
         />
         <FormulaCard
-          title="统一视角"
+          title="Sarsa(λ) 控制"
           formula={
             <KaTeX
-              math={String.raw`\text{更新量} = \alpha \bigl[ \underbrace{\text{采样回报}}_{\text{MC}} + \underbrace{\gamma \cdot \text{自举估计}}_{\text{DP}} - \text{当前估计} \bigr]`}
+              math={String.raw`E_t(s,a) = \gamma \lambda E_{t-1}(s,a) + \mathbf{1}_{s=s_t,a=a_t}, \quad q \leftarrow q + \alpha \delta_t E_t`}
               display
             />
           }
-          description="TD 把蒙特卡洛的采样思想与动态规划的自举思想统一起来。"
+          description="将资格迹从状态值推广到动作值，是同策略 TD 控制的多步扩展。"
         />
       </section>
 
-      <InteractiveDemo title="TD 算法逐回合演化">
+      <InteractiveDemo title="拓展算法逐回合演化">
         <div className="grid lg:grid-cols-[1fr_340px] gap-6">
           <div className="flex flex-col items-center justify-center bg-gray-50 rounded-xl p-6 border border-gray-200">
             <GridWorld
@@ -191,27 +179,26 @@ export default function Chapter07TdPage() {
               className="max-w-full"
             />
             <p className="mt-4 text-sm text-gray-500 text-center">
-              第 {step} 回合后的{displayName(algorithm, nStep)}
+              第 {step} 回合后的{displayName(algorithm)}
             </p>
           </div>
 
           <div className="space-y-4">
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-base">选择算法</CardTitle>
+                <CardTitle className="text-base">选择算法（教材拓展）</CardTitle>
               </CardHeader>
-              <CardContent className="grid grid-cols-2 gap-2">
+              <CardContent className="grid grid-cols-1 gap-2">
                 {[
-                  { key: 'td0', label: 'TD(0)' },
-                  { key: 'sarsa', label: 'Sarsa' },
-                  { key: 'nstep', label: 'n-step' },
-                  { key: 'qlearning', label: 'Q-learning' },
+                  { key: 'expected', label: 'Expected Sarsa' },
+                  { key: 'sarsa-lambda', label: 'Sarsa(λ)' },
+                  { key: 'td-lambda', label: 'TD(λ)' },
                 ].map(({ key, label }) => (
                   <Button
                     key={key}
                     variant={algorithm === key ? 'default' : 'outline'}
                     size="sm"
-                    onClick={() => setAlgorithm(key as MainAlgorithm)}
+                    onClick={() => setAlgorithm(key as ExtAlgorithm)}
                   >
                     {label}
                   </Button>
@@ -229,18 +216,18 @@ export default function Chapter07TdPage() {
                   <Slider value={[alpha]} min={0.01} max={0.5} step={0.01} onValueChange={([v]) => setAlpha(v)} />
                   <div className="mt-1 text-center font-mono text-sm text-gray-700">{alpha.toFixed(2)}</div>
                 </div>
-                {(algorithm === 'sarsa' || algorithm === 'nstep' || algorithm === 'qlearning') && (
+                {(algorithm === 'expected' || algorithm === 'sarsa-lambda') && (
                   <div>
                     <div className="text-sm text-gray-600 mb-1">探索率 ε</div>
                     <Slider value={[epsilon]} min={0} max={1} step={0.05} onValueChange={([v]) => setEpsilon(v)} />
                     <div className="mt-1 text-center font-mono text-sm text-gray-700">{epsilon.toFixed(2)}</div>
                   </div>
                 )}
-                {algorithm === 'nstep' && (
+                {(algorithm === 'td-lambda' || algorithm === 'sarsa-lambda') && (
                   <div>
-                    <div className="text-sm text-gray-600 mb-1">步数 n</div>
-                    <Slider value={[nStep]} min={1} max={10} step={1} onValueChange={([v]) => setNStep(v)} />
-                    <div className="mt-1 text-center font-mono text-sm text-gray-700">{nStep}</div>
+                    <div className="text-sm text-gray-600 mb-1">资格迹衰减 λ</div>
+                    <Slider value={[lambda]} min={0} max={0.99} step={0.01} onValueChange={([v]) => setLambda(v)} />
+                    <div className="mt-1 text-center font-mono text-sm text-gray-700">{lambda.toFixed(2)}</div>
                   </div>
                 )}
                 <div>
@@ -270,9 +257,9 @@ export default function Chapter07TdPage() {
           xLabel="回合"
           yLabel="v(s_1)"
           series={[
-            { key: 'td0', name: 'TD(0)', color: '#2563eb' },
-            { key: 'sarsa', name: 'Sarsa', color: '#ef4444' },
-            { key: 'qlearning', name: 'Q-learning', color: '#22c55e' },
+            { key: 'expected', name: 'Expected Sarsa', color: '#f59e0b' },
+            { key: 'sarsaLambda', name: 'Sarsa(λ)', color: '#ef4444' },
+            { key: 'tdLambda', name: 'TD(λ)', color: '#2563eb' },
           ]}
         />
       </InteractiveDemo>
@@ -286,7 +273,7 @@ export default function Chapter07TdPage() {
           series={[{ key: 'residual', name: '最大单步误差', color: '#8b5cf6' }]}
         />
         <p className="mt-2 text-sm text-gray-600">
-          对 TD(0) 计算策略 Bellman 残差；对 Sarsa / n-step Sarsa 计算同策略 Bellman 残差；对 Q-learning 计算 Bellman 最优残差。随着训练进行，该值应逐渐下降。
+          对 TD(λ) 计算策略 Bellman 残差；对 Expected Sarsa 与 Sarsa(λ) 计算同策略 Bellman 残差。
         </p>
       </InteractiveDemo>
 
@@ -296,28 +283,20 @@ export default function Chapter07TdPage() {
           items={[
             {
               id: 'summary',
-              title: '本章小结',
+              title: '本节小结',
               content: (
                 <ul className="list-disc pl-5 space-y-2">
-                  <li>TD 算法是随机逼近求解贝尔曼/贝尔曼最优方程的特例。</li>
-                  <li>TD(0) 每步更新，是在线学习的典型代表。</li>
-                  <li>Sarsa 同策略、Q-learning 异策略，两者都收敛到最优策略。</li>
-                  <li>n-step 方法在 TD 和 MC 之间做 bias-variance 权衡。</li>
-                  <li>Expected Sarsa 与 TD(λ)、Sarsa(λ) 见“教材拓展”页面。</li>
+                  <li>Expected Sarsa 用期望代替采样，目标方差更小。</li>
+                  <li>资格迹把多步回报的信息高效地分配到多个状态-动作对。</li>
+                  <li>λ=0 时退化为单步方法；λ 越接近 1，越接近多步/Monte Carlo 行为。</li>
                 </ul>
               ),
             },
             {
               id: 'qa1',
-              title: 'Q: TD 与 MC 的核心区别是什么？',
+              title: 'Q: λ=1 时资格迹等价于 MC 吗？',
               content:
-                'MC 需要等一个完整回合后才能更新；TD 每走一步就可以用自举目标更新，因此可以在线学习。',
-            },
-            {
-              id: 'qa2',
-              title: 'Q: 同策略与异策略控制有什么区别？',
-              content:
-                'Sarsa 用实际执行的下一个动作构造 TD 目标；Q-learning 用下一个状态的最大 Q 值构造目标，因此可以离策略数据学习。',
+                'λ=1 时迹不衰减，更新权重与 Monte Carlo 回报高度相关；但在线更新顺序与完整回报仍有差异，因此不应视为完全等价。',
             },
           ]}
         />
@@ -326,15 +305,13 @@ export default function Chapter07TdPage() {
   );
 }
 
-function displayName(algorithm: MainAlgorithm, nStep: number): string {
+function displayName(algorithm: ExtAlgorithm): string {
   switch (algorithm) {
-    case 'td0':
-      return 'TD(0) 状态值';
-    case 'sarsa':
-      return 'Sarsa 贪心策略';
-    case 'nstep':
-      return `${nStep}-step Sarsa 贪心策略`;
-    case 'qlearning':
-      return 'Q-learning 贪心策略';
+    case 'expected':
+      return 'Expected Sarsa 贪心策略';
+    case 'sarsa-lambda':
+      return 'Sarsa(λ) 贪心策略';
+    case 'td-lambda':
+      return 'TD(λ) 状态值';
   }
 }

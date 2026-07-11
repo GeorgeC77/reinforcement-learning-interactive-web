@@ -36,6 +36,7 @@ import Chapter06SaPage from './pages/chapters/chapter06/SaPage';
 // Chapter 7: Temporal-Difference Methods
 import Chapter07OverviewPage from './pages/chapters/chapter07/OverviewPage';
 import Chapter07TdPage from './pages/chapters/chapter07/TdPage';
+import Chapter07TdExtensionsPage from './pages/chapters/chapter07/TdExtensionsPage';
 
 // Chapter 8: Value Function Methods
 import Chapter08OverviewPage from './pages/chapters/chapter08/OverviewPage';
@@ -90,6 +91,7 @@ function App() {
           {/* Chapter 7 */}
           <Route path="/ch07/overview" element={<Chapter07OverviewPage />} />
           <Route path="/ch07/td" element={<Chapter07TdPage />} />
+          <Route path="/ch07/td-ext" element={<Chapter07TdExtensionsPage />} />
 
           {/* Chapter 8 */}
           <Route path="/ch08/overview" element={<Chapter08OverviewPage />} />

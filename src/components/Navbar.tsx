@@ -21,6 +21,7 @@ import {
   BarChart3,
   MousePointer2,
   Scale,
+  FlaskConical,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -91,6 +92,7 @@ const chapter06Items: NavItem[] = [
 const chapter07Items: NavItem[] = [
   { to: '/ch07/overview', label: '课程概览', icon: BookOpen },
   { to: '/ch07/td', label: '时序差分', icon: Clock },
+  { to: '/ch07/td-ext', label: '教材拓展', icon: FlaskConical },
 ];
 
 const chapter08Items: NavItem[] = [

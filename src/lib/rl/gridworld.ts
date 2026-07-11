@@ -23,6 +23,8 @@
  * are handled consistently.
  */
 
+import { mulberry32 } from './stochasticApproximation';
+
 export type Action = 0 | 1 | 2 | 3 | 4;
 export type StateIdx = number;
 export type TaskType = 'continuing' | 'episodic';
@@ -778,21 +780,6 @@ export function asyncValueIteration(
 /**
  * Build an epsilon-greedy policy from Q-values.
  */
-export function epsilonGreedyPolicy(qValues: number[][], epsilon: number): Policy {
-  const numActions = qValues[0]?.length ?? 5;
-  return qValues.map((q) => {
-    const maxQ = Math.max(...q);
-    const bestActions = q
-      .map((value, idx) => ({ value, idx }))
-      .filter(({ value }) => Math.abs(value - maxQ) < 1e-9)
-      .map(({ idx }) => idx);
-    const best = bestActions[Math.floor(Math.random() * bestActions.length)];
-    const dist = new Array(numActions).fill(epsilon / numActions);
-    dist[best] += 1 - epsilon;
-    return dist;
-  });
-}
-
 /**
  * Convert action-value estimates to state values (max over actions).
  */
@@ -923,198 +910,543 @@ export function estimateStateValueMC(
   return { estimates, returns };
 }
 
+export type EpsilonScheduleMode = 'fixed' | 'decay-floor' | 'glie';
+
+export function epsilonAtEpisode(
+  episode: number,
+  epsilon0: number,
+  mode: EpsilonScheduleMode
+): number {
+  if (mode === 'fixed') return epsilon0;
+  if (mode === 'glie') return epsilon0 / Math.sqrt(episode + 1);
+  // decay-floor
+  return Math.max(0.01, epsilon0 * Math.pow(0.99, episode));
+}
+
+function epsilonGreedyDistribution(
+  qState: number[],
+  epsilon: number,
+  rng?: () => number
+): number[] {
+  const numActions = qState.length;
+  const maxQ = Math.max(...qState);
+  const bestActions = qState
+    .map((value, idx) => ({ value, idx }))
+    .filter(({ value }) => Math.abs(value - maxQ) < 1e-9)
+    .map(({ idx }) => idx);
+  const best = rng
+    ? bestActions[Math.floor(rng() * bestActions.length)]
+    : bestActions[0];
+  const dist = new Array(numActions).fill(epsilon / numActions);
+  dist[best] += 1 - epsilon;
+  return dist;
+}
+
+export function epsilonGreedyPolicy(
+  qValues: number[][],
+  epsilon: number,
+  rng?: () => number
+): Policy {
+  return qValues.map((q) => epsilonGreedyDistribution(q, epsilon, rng));
+}
+
+export interface TDUpdateRecord {
+  episode: number;
+  time: number;
+  state: number;
+  action: Action;
+  reward: number;
+  nextState: number;
+  done: boolean;
+  oldEstimate: number;
+  bootstrapValue: number;
+  target: number;
+  tdError: number;
+  newEstimate: number;
+  valuesBefore?: number[];
+  valuesAfter?: number[];
+  qBefore?: number[][];
+  qAfter?: number[][];
+  nextAction?: Action;
+  behaviorPolicy?: number[];
+}
+
+export interface PredictionFrame {
+  kind: 'v';
+  values: number[];
+  policy: Policy;
+}
+
+export interface ControlFrame {
+  kind: 'q';
+  qValues: number[][];
+  behaviorPolicy: Policy;
+  greedyPolicy: Policy;
+}
+
+export type TDHistoryFrame = PredictionFrame | ControlFrame;
+
+export interface PredictionResult {
+  frames: PredictionFrame[];
+  updates: TDUpdateRecord[];
+}
+
+export interface ControlResult {
+  frames: ControlFrame[];
+  updates: TDUpdateRecord[];
+}
+
+function copyV(v: number[]): number[] {
+  return v.map((x) => x);
+}
+
+function copyQ(q: number[][]): number[][] {
+  return q.map((row) => [...row]);
+}
+
+export function policyBellmanResidualV(
+  values: number[],
+  policy: Policy,
+  config: GridWorldConfig
+): number {
+  let maxResidual = 0;
+  for (let s = 0; s < values.length; s++) {
+    if (isTerminal(s, config)) continue;
+    let expected = 0;
+    for (let a = 0; a < policy[s].length; a++) {
+      const p = policy[s][a];
+      if (p === 0) continue;
+      const result = step(s, a as Action, config);
+      const target =
+        result.reward + config.gamma * (result.done ? 0 : values[result.nextState]);
+      expected += p * target;
+    }
+    maxResidual = Math.max(maxResidual, Math.abs(values[s] - expected));
+  }
+  return maxResidual;
+}
+
+export function policyBellmanResidualQ(
+  q: number[][],
+  policy: Policy,
+  config: GridWorldConfig
+): number {
+  let maxResidual = 0;
+  for (let s = 0; s < q.length; s++) {
+    if (isTerminal(s, config)) continue;
+    for (let a = 0; a < q[s].length; a++) {
+      const result = step(s, a as Action, config);
+      let expectedNext = 0;
+      if (!result.done) {
+        expectedNext = q[result.nextState].reduce(
+          (sum, qVal, b) => sum + policy[result.nextState][b] * qVal,
+          0
+        );
+      }
+      const target = result.reward + config.gamma * expectedNext;
+      maxResidual = Math.max(maxResidual, Math.abs(q[s][a] - target));
+    }
+  }
+  return maxResidual;
+}
+
+export function optimalBellmanResidualQ(
+  q: number[][],
+  config: GridWorldConfig
+): number {
+  let maxResidual = 0;
+  for (let s = 0; s < q.length; s++) {
+    if (isTerminal(s, config)) continue;
+    for (let a = 0; a < q[s].length; a++) {
+      const result = step(s, a as Action, config);
+      const maxQNext = result.done ? 0 : Math.max(...q[result.nextState]);
+      const target = result.reward + config.gamma * maxQNext;
+      maxResidual = Math.max(maxResidual, Math.abs(q[s][a] - target));
+    }
+  }
+  return maxResidual;
+}
+
+interface NStepTargetInput {
+  tau: number;
+  n: number;
+  T: number;
+  rewards: number[];
+  states: number[];
+  actions: Action[];
+  q: number[][];
+  gamma: number;
+  truncated: boolean;
+}
+
+function computeNStepTarget(input: NStepTargetInput): number {
+  const { tau, n, T, rewards, states, actions, q, gamma, truncated } = input;
+  const end = Math.min(tau + n, T);
+  let g = 0;
+  for (let i = tau + 1; i <= end; i++) {
+    g += Math.pow(gamma, i - tau - 1) * rewards[i];
+  }
+  if (tau + n < T) {
+    g += Math.pow(gamma, n) * q[states[tau + n]][actions[tau + n]];
+  } else if (truncated && tau + n === T && actions.length > T) {
+    // Artificial horizon: bootstrap from the sampled (S_H, A_H).
+    g += Math.pow(gamma, n) * q[states[T]][actions[T]];
+  }
+  return g;
+}
+
 /**
  * TD(0) prediction: estimate state values for a given policy.
- * Returns the history of value estimates (one entry per episode).
+ * Returns per-episode frames and every transition-level update record.
  */
 export function tdZeroPrediction(
   policy: Policy,
   config: GridWorldConfig,
   alpha: number = 0.1,
+  horizonH: number = 30,
   episodes: number = 200,
-  maxSteps: number = 30
-): StateValues[] {
+  seed: number = 1
+): PredictionResult {
+  const rng = mulberry32(seed);
   const numStates = config.rows * config.cols;
   let v = new Array(numStates).fill(0);
-  const history: StateValues[] = [v.map((x) => x)];
+  const frames: PredictionFrame[] = [{ kind: 'v', values: copyV(v), policy }];
+  const updates: TDUpdateRecord[] = [];
+  let time = 0;
 
   for (let ep = 0; ep < episodes; ep++) {
     let state = config.startState;
-    for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
+    for (let t = 0; t < horizonH; t++) {
       if (isTerminal(state, config)) break;
-      const action = sampleAction(policy[state]);
+      const action = sampleActionWithRng(policy[state], rng);
       const result = step(state, action, config);
-      const tdTarget = result.done
-        ? result.reward
-        : result.reward + config.gamma * v[result.nextState];
-      v[state] += alpha * (tdTarget - v[state]);
+      const old = v[state];
+      const bootstrap = result.done ? 0 : v[result.nextState];
+      const target = result.reward + config.gamma * bootstrap;
+      const tdError = target - old;
+      const valuesBefore = copyV(v);
+      v[state] += alpha * tdError;
+      updates.push({
+        episode: ep,
+        time,
+        state,
+        action,
+        reward: result.reward,
+        nextState: result.nextState,
+        done: result.done,
+        oldEstimate: old,
+        bootstrapValue: bootstrap,
+        target,
+        tdError,
+        newEstimate: v[state],
+        valuesBefore,
+        valuesAfter: copyV(v),
+        behaviorPolicy: policy[state],
+      });
       state = result.nextState;
+      time++;
       if (result.done) break;
     }
-    history.push(v.map((x) => x));
+    frames.push({ kind: 'v', values: copyV(v), policy });
   }
 
-  return history;
+  return { frames, updates };
 }
 
 /**
- * Sarsa: on-policy TD control.
- * Returns the history of Q-value estimates (one entry per episode).
+ * Sarsa: on-policy TD control with ε-greedy exploration.
  */
 export function sarsa(
   config: GridWorldConfig,
   alpha: number = 0.1,
-  epsilon: number = 0.3,
+  epsilon0: number = 0.3,
+  epsilonMode: EpsilonScheduleMode = 'fixed',
+  horizonH: number = 30,
   episodes: number = 200,
-  maxSteps: number = 30
-): number[][][] {
+  seed: number = 1
+): ControlResult {
+  const rng = mulberry32(seed);
   const numStates = config.rows * config.cols;
   const numActions = 5;
   let q = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
-  const history: number[][][] = [q.map((row) => [...row])];
+  const frames: ControlFrame[] = [
+    {
+      kind: 'q',
+      qValues: copyQ(q),
+      behaviorPolicy: epsilonGreedyPolicy(q, epsilon0, rng),
+      greedyPolicy: greedyPolicy(q),
+    },
+  ];
+  const updates: TDUpdateRecord[] = [];
+  let time = 0;
 
   for (let ep = 0; ep < episodes; ep++) {
+    const epsilon = epsilonAtEpisode(ep, epsilon0, epsilonMode);
     let state = config.startState;
-    let policy = epsilonGreedyPolicy(q, epsilon);
-    let action = sampleAction(policy[state]);
+    let action = sampleActionWithRng(
+      epsilonGreedyDistribution(q[state], epsilon, rng),
+      rng
+    );
 
-    for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
-      if (isTerminal(state, config)) break;
-      const currentAction = action;
-      const result = step(state, currentAction, config);
-
-      let tdTarget = result.reward;
-      let nextAction: Action | null = null;
+    for (let t = 0; t < horizonH; t++) {
+      const result = step(state, action, config);
+      let nextAction: Action | undefined;
+      let bootstrap = 0;
       if (!result.done) {
-        policy = epsilonGreedyPolicy(q, epsilon);
-        nextAction = sampleAction(policy[result.nextState]);
-        tdTarget += config.gamma * q[result.nextState][nextAction];
+        nextAction = sampleActionWithRng(
+          epsilonGreedyDistribution(q[result.nextState], epsilon, rng),
+          rng
+        );
+        bootstrap = q[result.nextState][nextAction];
       }
-
-      // Update Q(S_t, A_t) BEFORE moving to the next action.
-      q[state][currentAction] += alpha * (tdTarget - q[state][currentAction]);
-
-      state = result.nextState;
+      const target = result.reward + config.gamma * bootstrap;
+      const tdError = target - q[state][action];
+      const qBefore = copyQ(q);
+      const behaviorPolicy = epsilonGreedyPolicy(q, epsilon, rng);
+      q[state][action] += alpha * tdError;
+      updates.push({
+        episode: ep,
+        time,
+        state,
+        action,
+        reward: result.reward,
+        nextState: result.nextState,
+        done: result.done,
+        oldEstimate: qBefore[state][action],
+        bootstrapValue: bootstrap,
+        target,
+        tdError,
+        newEstimate: q[state][action],
+        qBefore,
+        qAfter: copyQ(q),
+        nextAction,
+        behaviorPolicy: behaviorPolicy[state],
+      });
       if (result.done) break;
-      if (nextAction !== null) action = nextAction;
+      state = result.nextState;
+      action = nextAction!;
+      time++;
     }
-    history.push(q.map((row) => [...row]));
+    frames.push({
+      kind: 'q',
+      qValues: copyQ(q),
+      behaviorPolicy: epsilonGreedyPolicy(q, epsilon, rng),
+      greedyPolicy: greedyPolicy(q),
+    });
   }
 
-  return history;
+  return { frames, updates };
 }
 
 /**
  * Q-learning: off-policy TD control.
- * Returns the history of Q-value estimates (one entry per episode).
  */
 export function qLearning(
   config: GridWorldConfig,
   alpha: number = 0.1,
-  epsilon: number = 0.3,
+  epsilon0: number = 0.3,
+  epsilonMode: EpsilonScheduleMode = 'fixed',
+  horizonH: number = 30,
   episodes: number = 200,
-  maxSteps: number = 30
-): number[][][] {
+  seed: number = 1
+): ControlResult {
+  const rng = mulberry32(seed);
   const numStates = config.rows * config.cols;
   const numActions = 5;
   let q = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
-  const history: number[][][] = [q.map((row) => [...row])];
+  const frames: ControlFrame[] = [
+    {
+      kind: 'q',
+      qValues: copyQ(q),
+      behaviorPolicy: epsilonGreedyPolicy(q, epsilon0, rng),
+      greedyPolicy: greedyPolicy(q),
+    },
+  ];
+  const updates: TDUpdateRecord[] = [];
+  let time = 0;
 
   for (let ep = 0; ep < episodes; ep++) {
+    const epsilon = epsilonAtEpisode(ep, epsilon0, epsilonMode);
     let state = config.startState;
-    for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
+
+    for (let t = 0; t < horizonH; t++) {
       if (isTerminal(state, config)) break;
-      const policy = epsilonGreedyPolicy(q, epsilon);
-      const action = sampleAction(policy[state]);
+      const behaviorPolicy = epsilonGreedyPolicy(q, epsilon, rng);
+      const action = sampleActionWithRng(behaviorPolicy[state], rng);
       const result = step(state, action, config);
-      const maxQNext = Math.max(...q[result.nextState]);
-      const tdTarget = result.done
-        ? result.reward
-        : result.reward + config.gamma * maxQNext;
-      q[state][action] += alpha * (tdTarget - q[state][action]);
+      const maxQNext = result.done ? 0 : Math.max(...q[result.nextState]);
+      const target = result.reward + config.gamma * maxQNext;
+      const tdError = target - q[state][action];
+      const qBefore = copyQ(q);
+      q[state][action] += alpha * tdError;
+      updates.push({
+        episode: ep,
+        time,
+        state,
+        action,
+        reward: result.reward,
+        nextState: result.nextState,
+        done: result.done,
+        oldEstimate: qBefore[state][action],
+        bootstrapValue: maxQNext,
+        target,
+        tdError,
+        newEstimate: q[state][action],
+        qBefore,
+        qAfter: copyQ(q),
+        behaviorPolicy: behaviorPolicy[state],
+      });
       state = result.nextState;
+      time++;
       if (result.done) break;
     }
-    history.push(q.map((row) => [...row]));
+    frames.push({
+      kind: 'q',
+      qValues: copyQ(q),
+      behaviorPolicy: epsilonGreedyPolicy(q, epsilon, rng),
+      greedyPolicy: greedyPolicy(q),
+    });
   }
 
-  return history;
+  return { frames, updates };
 }
 
 /**
  * n-step Sarsa: on-policy TD control with n-step returns.
- * Returns history of Q-values (one entry per episode).
+ *
+ * This is the standard online algorithm: transitions are generated one at a
+ * time, and the n-step update is performed as soon as n transitions are
+ * available. The trajectory is capped at H transitions; natural terminal and
+ * artificial horizon are handled separately so no tail updates are lost.
  */
 export function nStepSarsa(
   config: GridWorldConfig,
   alpha: number = 0.1,
-  epsilon: number = 0.3,
+  epsilon0: number = 0.3,
+  epsilonMode: EpsilonScheduleMode = 'fixed',
   n: number = 3,
+  horizonH: number = 30,
   episodes: number = 200,
-  maxSteps: number = 30
-): number[][][] {
+  seed: number = 1
+): ControlResult {
+  const rng = mulberry32(seed);
   const numStates = config.rows * config.cols;
   const numActions = 5;
   let q = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
-  const history: number[][][] = [q.map((row) => [...row])];
+  const frames: ControlFrame[] = [
+    {
+      kind: 'q',
+      qValues: copyQ(q),
+      behaviorPolicy: epsilonGreedyPolicy(q, epsilon0, rng),
+      greedyPolicy: greedyPolicy(q),
+    },
+  ];
+  const updates: TDUpdateRecord[] = [];
+  let time = 0;
 
   for (let ep = 0; ep < episodes; ep++) {
-    let state = config.startState;
-    const states: number[] = [state];
+    const epsilon = epsilonAtEpisode(ep, epsilon0, epsilonMode);
+    const states: number[] = [config.startState];
     const actions: Action[] = [];
     const rewards: number[] = [0];
-
-    let policy = epsilonGreedyPolicy(q, epsilon);
-    let action = sampleAction(policy[state]);
-    actions.push(action);
-
-    let t = 0;
     let T = Infinity;
+    let truncated = false;
+    let t = 0;
+
+    // Choose the initial action A_0.
+    const startAction = sampleActionWithRng(
+      epsilonGreedyDistribution(q[config.startState], epsilon, rng),
+      rng
+    );
+    actions.push(startAction);
 
     while (true) {
       if (t < T) {
-        if (isTerminal(state, config)) {
-          T = t;
+        const result = step(states[t], actions[t], config);
+        rewards.push(result.reward);
+        states.push(result.nextState);
+
+        if (result.done) {
+          T = t + 1;
+        } else if (t + 1 === horizonH) {
+          // Artificial horizon: the trajectory has reached H transitions.
+          // Sample a bootstrap action from S_H for truncated n-step targets.
+          const bootstrapAction = sampleActionWithRng(
+            epsilonGreedyDistribution(q[result.nextState], epsilon, rng),
+            rng
+          );
+          actions.push(bootstrapAction);
+          truncated = true;
+          T = horizonH;
         } else {
-          const result = step(state, action, config);
-          states.push(result.nextState);
-          rewards.push(result.reward);
-          if (result.done) {
-            T = t + 1;
-          } else {
-            policy = epsilonGreedyPolicy(q, epsilon);
-            const aNext = sampleAction(policy[result.nextState]);
-            actions.push(aNext);
-          }
+          // Continue the trajectory by sampling the next action online.
+          const nextAction = sampleActionWithRng(
+            epsilonGreedyDistribution(q[result.nextState], epsilon, rng),
+            rng
+          );
+          actions.push(nextAction);
         }
       }
 
       const tau = t - n + 1;
       if (tau >= 0) {
-        let G = 0;
-        for (let i = tau + 1; i <= Math.min(tau + n, T); i++) {
-          G += Math.pow(config.gamma, i - tau - 1) * rewards[i];
-        }
-        if (tau + n < T) {
-          G += Math.pow(config.gamma, n) * q[states[tau + n]][actions[tau + n]];
-        }
-        const sTau = states[tau];
-        const aTau = actions[tau];
-        q[sTau][aTau] += alpha * (G - q[sTau][aTau]);
+        const target = computeNStepTarget({
+          tau,
+          n,
+          T,
+          rewards,
+          states,
+          actions,
+          q,
+          gamma: config.gamma,
+          truncated,
+        });
+        const s = states[tau];
+        const a = actions[tau];
+        const tdError = target - q[s][a];
+        const qBefore = copyQ(q);
+        q[s][a] += alpha * tdError;
+
+        const bootstrapValue =
+          tau + n < T
+            ? qBefore[states[tau + n]][actions[tau + n]]
+            : truncated && tau + n === T && actions.length > T
+              ? qBefore[states[T]][actions[T]]
+              : 0;
+
+        updates.push({
+          episode: ep,
+          time,
+          state: s,
+          action: a,
+          reward: rewards[tau + 1],
+          nextState: states[tau + 1],
+          done: tau + 1 === T && !truncated,
+          oldEstimate: qBefore[s][a],
+          bootstrapValue,
+          target,
+          tdError,
+          newEstimate: q[s][a],
+          qBefore,
+          qAfter: copyQ(q),
+          behaviorPolicy: epsilonGreedyPolicy(q, epsilon, rng)[s],
+        });
+        time++;
       }
 
       if (tau === T - 1) break;
-
-      state = states[t + 1];
-      action = actions[t + 1];
       t++;
-      if (t > maxSteps) break;
     }
 
-    history.push(q.map((row) => [...row]));
+    frames.push({
+      kind: 'q',
+      qValues: copyQ(q),
+      behaviorPolicy: epsilonGreedyPolicy(q, epsilon, rng),
+      greedyPolicy: greedyPolicy(q),
+    });
   }
 
-  return history;
+  return { frames, updates };
 }
 
 /**
@@ -1124,42 +1456,78 @@ export function nStepSarsa(
 export function expectedSarsa(
   config: GridWorldConfig,
   alpha: number = 0.1,
-  epsilon: number = 0.3,
+  epsilon0: number = 0.3,
+  epsilonMode: EpsilonScheduleMode = 'fixed',
+  horizonH: number = 30,
   episodes: number = 200,
-  maxSteps: number = 30
-): number[][][] {
+  seed: number = 1
+): ControlResult {
+  const rng = mulberry32(seed);
   const numStates = config.rows * config.cols;
   const numActions = 5;
   let q = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
-  const history: number[][][] = [q.map((row) => [...row])];
+  const frames: ControlFrame[] = [
+    {
+      kind: 'q',
+      qValues: copyQ(q),
+      behaviorPolicy: epsilonGreedyPolicy(q, epsilon0, rng),
+      greedyPolicy: greedyPolicy(q),
+    },
+  ];
+  const updates: TDUpdateRecord[] = [];
+  let time = 0;
 
   for (let ep = 0; ep < episodes; ep++) {
+    const epsilon = epsilonAtEpisode(ep, epsilon0, epsilonMode);
     let state = config.startState;
 
-    for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
+    for (let t = 0; t < horizonH; t++) {
       if (isTerminal(state, config)) break;
-      const policy = epsilonGreedyPolicy(q, epsilon);
-      const action = sampleAction(policy[state]);
+      const behaviorPolicy = epsilonGreedyPolicy(q, epsilon, rng);
+      const action = sampleActionWithRng(behaviorPolicy[state], rng);
       const result = step(state, action, config);
 
-      let tdTarget = result.reward;
+      let bootstrap = 0;
       if (!result.done) {
-        const nextPolicy = epsilonGreedyPolicy(q, epsilon);
-        const expectedQNext = q[result.nextState].reduce(
-          (sum, qVal, a) => sum + nextPolicy[result.nextState][a] * qVal,
+        bootstrap = q[result.nextState].reduce(
+          (sum, qVal, b) => sum + behaviorPolicy[result.nextState][b] * qVal,
           0
         );
-        tdTarget += config.gamma * expectedQNext;
       }
-      q[state][action] += alpha * (tdTarget - q[state][action]);
-
+      const target = result.reward + config.gamma * bootstrap;
+      const tdError = target - q[state][action];
+      const qBefore = copyQ(q);
+      q[state][action] += alpha * tdError;
+      updates.push({
+        episode: ep,
+        time,
+        state,
+        action,
+        reward: result.reward,
+        nextState: result.nextState,
+        done: result.done,
+        oldEstimate: qBefore[state][action],
+        bootstrapValue: bootstrap,
+        target,
+        tdError,
+        newEstimate: q[state][action],
+        qBefore,
+        qAfter: copyQ(q),
+        behaviorPolicy: behaviorPolicy[state],
+      });
       state = result.nextState;
+      time++;
       if (result.done) break;
     }
-    history.push(q.map((row) => [...row]));
+    frames.push({
+      kind: 'q',
+      qValues: copyQ(q),
+      behaviorPolicy: epsilonGreedyPolicy(q, epsilon, rng),
+      greedyPolicy: greedyPolicy(q),
+    });
   }
 
-  return history;
+  return { frames, updates };
 }
 
 /**
@@ -1168,36 +1536,55 @@ export function expectedSarsa(
 export function sarsaLambda(
   config: GridWorldConfig,
   alpha: number = 0.1,
-  epsilon: number = 0.3,
+  epsilon0: number = 0.3,
+  epsilonMode: EpsilonScheduleMode = 'fixed',
   lambda: number = 0.8,
+  horizonH: number = 30,
   episodes: number = 200,
-  maxSteps: number = 30
-): number[][][] {
+  seed: number = 1
+): ControlResult {
+  const rng = mulberry32(seed);
   const numStates = config.rows * config.cols;
   const numActions = 5;
   let q = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
-  const history: number[][][] = [q.map((row) => [...row])];
+  const frames: ControlFrame[] = [
+    {
+      kind: 'q',
+      qValues: copyQ(q),
+      behaviorPolicy: epsilonGreedyPolicy(q, epsilon0, rng),
+      greedyPolicy: greedyPolicy(q),
+    },
+  ];
+  const updates: TDUpdateRecord[] = [];
+  let time = 0;
 
   for (let ep = 0; ep < episodes; ep++) {
+    const epsilon = epsilonAtEpisode(ep, epsilon0, epsilonMode);
+    const eligibility = Array.from({ length: numStates }, () =>
+      new Array(numActions).fill(0)
+    );
     let state = config.startState;
-    const eligibility = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
+    let action = sampleActionWithRng(
+      epsilonGreedyDistribution(q[state], epsilon, rng),
+      rng
+    );
 
-    const policy = epsilonGreedyPolicy(q, epsilon);
-    let action = sampleAction(policy[state]);
-
-    for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
-      if (isTerminal(state, config)) break;
+    for (let t = 0; t < horizonH; t++) {
       const result = step(state, action, config);
-
-      const nextPolicy = epsilonGreedyPolicy(q, epsilon);
-      const nextAction = sampleAction(nextPolicy[result.nextState]);
-      const tdTarget = result.done
-        ? result.reward
-        : result.reward + config.gamma * q[result.nextState][nextAction];
-      const delta = tdTarget - q[state][action];
+      let nextAction: Action | undefined;
+      let bootstrap = 0;
+      if (!result.done) {
+        nextAction = sampleActionWithRng(
+          epsilonGreedyDistribution(q[result.nextState], epsilon, rng),
+          rng
+        );
+        bootstrap = q[result.nextState][nextAction];
+      }
+      const target = result.reward + config.gamma * bootstrap;
+      const delta = target - q[state][action];
+      const qBefore = copyQ(q);
 
       eligibility[state][action] += 1;
-
       for (let s = 0; s < numStates; s++) {
         for (let a = 0; a < numActions; a++) {
           q[s][a] += alpha * delta * eligibility[s][a];
@@ -1205,14 +1592,39 @@ export function sarsaLambda(
         }
       }
 
-      state = result.nextState;
-      action = nextAction;
+      updates.push({
+        episode: ep,
+        time,
+        state,
+        action,
+        reward: result.reward,
+        nextState: result.nextState,
+        done: result.done,
+        oldEstimate: qBefore[state][action],
+        bootstrapValue: bootstrap,
+        target,
+        tdError: delta,
+        newEstimate: q[state][action],
+        qBefore,
+        qAfter: copyQ(q),
+        nextAction,
+        behaviorPolicy: epsilonGreedyPolicy(q, epsilon, rng)[state],
+      });
+
       if (result.done) break;
+      state = result.nextState;
+      action = nextAction!;
+      time++;
     }
-    history.push(q.map((row) => [...row]));
+    frames.push({
+      kind: 'q',
+      qValues: copyQ(q),
+      behaviorPolicy: epsilonGreedyPolicy(q, epsilon, rng),
+      greedyPolicy: greedyPolicy(q),
+    });
   }
 
-  return history;
+  return { frames, updates };
 }
 
 /**
@@ -1223,38 +1635,58 @@ export function tdLambdaPrediction(
   config: GridWorldConfig,
   alpha: number = 0.1,
   lambda: number = 0.8,
+  horizonH: number = 30,
   episodes: number = 200,
-  maxSteps: number = 30
-): StateValues[] {
+  seed: number = 1
+): PredictionResult {
+  const rng = mulberry32(seed);
   const numStates = config.rows * config.cols;
   let v = new Array(numStates).fill(0);
-  const history: StateValues[] = [v.map((x) => x)];
+  const frames: PredictionFrame[] = [{ kind: 'v', values: copyV(v), policy }];
+  const updates: TDUpdateRecord[] = [];
+  let time = 0;
 
   for (let ep = 0; ep < episodes; ep++) {
     let state = config.startState;
     const eligibility = new Array(numStates).fill(0);
 
-    for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
+    for (let t = 0; t < horizonH; t++) {
       if (isTerminal(state, config)) break;
-      const action = sampleAction(policy[state]);
+      const action = sampleActionWithRng(policy[state], rng);
       const result = step(state, action, config);
-
-      const vNext = result.done ? 0 : v[result.nextState];
-      const delta = result.reward + config.gamma * vNext - v[state];
-
+      const bootstrap = result.done ? 0 : v[result.nextState];
+      const delta = result.reward + config.gamma * bootstrap - v[state];
+      const valuesBefore = copyV(v);
       eligibility[state] += 1;
       for (let s = 0; s < numStates; s++) {
         v[s] += alpha * delta * eligibility[s];
         eligibility[s] *= config.gamma * lambda;
       }
-
+      updates.push({
+        episode: ep,
+        time,
+        state,
+        action,
+        reward: result.reward,
+        nextState: result.nextState,
+        done: result.done,
+        oldEstimate: valuesBefore[state],
+        bootstrapValue: bootstrap,
+        target: result.reward + config.gamma * bootstrap,
+        tdError: delta,
+        newEstimate: v[state],
+        valuesBefore,
+        valuesAfter: copyV(v),
+        behaviorPolicy: policy[state],
+      });
       state = result.nextState;
+      time++;
       if (result.done) break;
     }
-    history.push(v.map((x) => x));
+    frames.push({ kind: 'v', values: copyV(v), policy });
   }
 
-  return history;
+  return { frames, updates };
 }
 
 /**

@@ -43,6 +43,8 @@ import {
   powerStepSizes,
   checkStepSizeCondition,
   partialSumCondition,
+  checkDvoretzkyAlphaPower,
+  checkDvoretzkyBetaPower,
   meanEstimationGradientDescent,
   estimateBatchGradientVariance,
   movingAverage,
@@ -920,8 +922,8 @@ function DvoretzkyDemo() {
     [initialDelta, alphas, betas, noiseStd, seed]
   );
 
-  const alphaCondition = useMemo(() => checkStepSizeCondition(alphaPower), [alphaPower]);
-  const betaCondition = useMemo(() => checkStepSizeCondition(betaPower), [betaPower]);
+  const alphaCondition = useMemo(() => checkDvoretzkyAlphaPower(alphaPower), [alphaPower]);
+  const betaCondition = useMemo(() => checkDvoretzkyBetaPower(betaPower), [betaPower]);
   const alphaPartial = useMemo(() => partialSumCondition(steps, alphaPower), [steps, alphaPower]);
   const betaPartial = useMemo(() => partialSumCondition(steps, betaPower), [steps, betaPower]);
 
@@ -936,6 +938,10 @@ function DvoretzkyDemo() {
         <div className="flex flex-col gap-4">
           <div className="bg-gray-50 rounded-xl p-6 border border-gray-200 text-sm text-gray-700 space-y-3">
             <p className="font-semibold">Theorem 6.2（Dvoretzky&apos;s convergence theorem）</p>
+            <p className="text-xs text-gray-500">
+              下方互动使用确定性序列 α_k=1/k^p_α、β_k=1/k^p_β 作为定理的示例；
+              教材原定理还允许 α_k、β_k 是依赖历史 filtration H_k 的随机序列。
+            </p>
             <p>考虑随机过程</p>
             <KaTeX math={String.raw`\Delta_{k+1} = (1-\alpha_k)\Delta_k + \beta_k \eta_k, \quad k=1,2,\dots`} display />
             <p>
@@ -961,12 +967,24 @@ function DvoretzkyDemo() {
             <ConditionCheckCard
               title="系数 α_k 条件"
               ok={alphaCondition.valid}
-              details={`p_α=${alphaPower.toFixed(2)}：Σα=${alphaPartial.sum.toFixed(2)}，Σα²=${alphaPartial.sumSquares.toFixed(3)}。${alphaCondition.description}`}
+              details={
+                <span>
+                  p_α={alphaPower.toFixed(2)}：Σα={alphaPartial.sum.toFixed(2)}（{alphaCondition.sumDiverges ? '发散' : '收敛'}），
+                  Σα²={alphaPartial.sumSquares.toFixed(3)}（{alphaCondition.squareSumConverges ? '收敛' : '发散'}）。
+                  {alphaCondition.valid ? '满足 Dvoretzky α 条件。' : '不满足 Dvoretzky α 条件。'}
+                </span>
+              }
             />
             <ConditionCheckCard
               title="系数 β_k 条件"
               ok={betaCondition.valid}
-              details={`p_β=${betaPower.toFixed(2)}：Σβ=${betaPartial.sum.toFixed(2)}，Σβ²=${betaPartial.sumSquares.toFixed(3)}。${betaCondition.description}`}
+              details={
+                <span>
+                  p_β={betaPower.toFixed(2)}：Σβ²={betaPartial.sumSquares.toFixed(3)}（{betaCondition.squareSumConverges ? '收敛' : '发散'}）。
+                  Dvoretzky 定理只要求 Σβ_k² 收敛，不要求 Σβ_k 发散。
+                  {betaCondition.valid ? '满足 Dvoretzky β 条件。' : '不满足 Dvoretzky β 条件。'}
+                </span>
+              }
             />
             <ConditionCheckCard
               title="条件均值 E[η_k|H_k]=0"

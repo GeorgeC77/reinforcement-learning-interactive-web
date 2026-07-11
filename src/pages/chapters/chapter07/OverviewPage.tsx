@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { BookOpen, Clock, Route, ArrowRight, ShieldAlert } from 'lucide-react';
+import { BookOpen, Clock, Route, ArrowRight, ShieldAlert, FlaskConical } from 'lucide-react';
 import ConceptCard from '@/components/ConceptCard';
 import KaTeX from '@/components/KaTeX';
 
@@ -50,6 +50,11 @@ export default function Chapter07OverviewPage() {
             title="TD 与 MC/DP 的关系"
             description="TD 是蒙特卡洛采样与动态规划自举的折中。"
           />
+          <ConceptCard
+            icon={<FlaskConical className="w-5 h-5" />}
+            title="教材拓展"
+            description="Expected Sarsa、TD(λ) 与 Sarsa(λ)。"
+          />
         </div>
       </section>
 
@@ -67,7 +72,14 @@ export default function Chapter07OverviewPage() {
         </div>
       </section>
 
-      <section className="flex justify-end">
+      <section className="flex justify-end gap-4">
+        <Link
+          to="/ch07/td-ext"
+          className="inline-flex items-center gap-2 px-6 py-3 bg-purple-100 text-purple-700 rounded-lg font-medium hover:bg-purple-200 transition-colors"
+        >
+          教材拓展
+          <ArrowRight className="w-4 h-4" />
+        </Link>
         <Link
           to="/ch07/td"
           className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors"

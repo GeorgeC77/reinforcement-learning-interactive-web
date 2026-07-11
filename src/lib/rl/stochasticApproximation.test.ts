@@ -7,6 +7,8 @@ import {
   meanEstimationGradientDescent,
   estimateBatchGradientVariance,
   tdBridgeStep,
+  checkDvoretzkyAlphaPower,
+  checkDvoretzkyBetaPower,
 } from './stochasticApproximation';
 import { deterministicPolicy, DEFAULT_CONFIG, type Action } from './gridworld';
 
@@ -106,6 +108,13 @@ export function runStochasticApproximationTests() {
     const z = normalRandom(rng3, 0, 1);
     assert(Number.isFinite(z), 'normalRandom produced non-finite value');
   }
+
+  // 9. Dvoretzky alpha/beta power conditions
+  assert(checkDvoretzkyAlphaPower(0.75).valid, 'pAlpha=0.75 should be valid');
+  assert(!checkDvoretzkyAlphaPower(1.25).valid, 'pAlpha=1.25 should be invalid');
+  assert(checkDvoretzkyBetaPower(0.75).valid, 'pBeta=0.75 should be valid');
+  assert(checkDvoretzkyBetaPower(1.25).valid, 'pBeta=1.25 should be valid');
+  assert(!checkDvoretzkyBetaPower(0.5).valid, 'pBeta=0.5 should be invalid');
 
   console.log('All stochastic approximation tests passed.');
 }

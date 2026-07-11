@@ -198,6 +198,32 @@ export function partialSumCondition(
   };
 }
 
+export interface DvoretzkyAlphaCondition {
+  sumDiverges: boolean;
+  squareSumConverges: boolean;
+  valid: boolean;
+}
+
+export function checkDvoretzkyAlphaPower(p: number): DvoretzkyAlphaCondition {
+  return {
+    sumDiverges: p <= 1,
+    squareSumConverges: p > 0.5,
+    valid: p > 0.5 && p <= 1,
+  };
+}
+
+export interface DvoretzkyBetaCondition {
+  squareSumConverges: boolean;
+  valid: boolean;
+}
+
+export function checkDvoretzkyBetaPower(p: number): DvoretzkyBetaCondition {
+  return {
+    squareSumConverges: p > 0.5,
+    valid: p > 0.5,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Tab 4: BGD / MBGD / SGD for mean estimation
 // ---------------------------------------------------------------------------
