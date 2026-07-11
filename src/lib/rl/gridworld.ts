@@ -1552,7 +1552,12 @@ export function mcBasicPolicyIteration(
     ? iterations[iterations.length - 1].qEstimate
     : Array.from({ length: numStates }, () => new Array(numActions).fill(0));
 
-  return { iterations, finalPolicy: policy, finalQ };
+  // finalQ estimates q_{π_k} where π_k = last policyBefore
+  const finalQPolicy = iterations.length > 0
+    ? iterations[iterations.length - 1].policyBefore
+    : policy;
+
+  return { iterations, finalPolicy: policy, finalQ, finalQPolicy };
 }
 
 /**
@@ -1568,7 +1573,7 @@ export interface MCLearnerState {
   currentEpsilon: number;
 }
 
-export function createMCLearnerState(config: GridWorldConfig): MCLearnerState {
+export function createMCLearnerState(config: GridWorldConfig, initialEpsilon: number = 0): MCLearnerState {
   const numStates = config.rows * config.cols;
   const numActions = 5;
   return {
@@ -1577,7 +1582,7 @@ export function createMCLearnerState(config: GridWorldConfig): MCLearnerState {
     visitCount: Array.from({ length: numStates }, () => new Array(numActions).fill(0)),
     policy: randomPolicy(numStates, numActions),
     episodesCompleted: 0,
-    currentEpsilon: 0,
+    currentEpsilon: initialEpsilon,
   };
 }
 
