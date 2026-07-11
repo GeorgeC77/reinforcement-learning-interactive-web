@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useRef } from 'react';
+﻿import { useState, useCallback, useMemo, useRef } from 'react';
 import { Dices, ShieldAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
@@ -25,6 +25,7 @@ import {
   greedyPolicy,
   actionValueToStateValue,
   mcBasic,
+  type MCBasicIteration,
   mcBasicPolicyIteration,
   mcExploringStarts,
   mcEpsilonGreedy,
@@ -33,13 +34,19 @@ import {
   runMCEpsilonGreedyEpisodes,
   type MCLearnerState,
   type EpsilonSchedule,
-  computeEpsilon,
   estimateTrueActionValues,
+  solveStateValues,
+  computeQValues,
   qTableRMSE,
 } from '@/lib/rl/gridworld';
 
 type TabKey = 'basic' | 'exploring' | 'epsilon';
 type VisitMode = 'first-visit' | 'every-visit';
+
+interface LearningPoint {
+  episode: number;
+  rmse: number;
+}
 
 export default function Chapter05MonteCarloPage() {
   const [activeTab, setActiveTab] = useState<TabKey>('basic');
@@ -118,7 +125,10 @@ export default function Chapter05MonteCarloPage() {
             <strong>ε-Greedy：</strong>当无法保证 exploring starts 时，用 ε-贪心持续探索，是更实用的模型-free 控制。支持固定 ε 和衰减 ε 两种调度。
           </li>
           <li>
-            <strong>First-visit vs Every-visit：</strong>同一回合中，first-visit 只对首次访问的 (s,a) 更新；every-visit 对每个访问都更新。两者都收敛到真值，但 first-visit 的估计是无偏的，every-visit 的估计在有界样本下有偏。
+            <strong>First-visit vs Every-visit：</strong>First-visit 只使用每个回合中首次访问 (s,a) 后的回报；
+            Every-visit 使用该回合中的全部访问，因此能利用更多样本，但同一回合内
+            这些回报通常相关。两种方法在适当条件下均可收敛，其有限样本偏差与方差
+            取决于具体采样过程。
           </li>
         </ul>
       </section>
@@ -129,21 +139,24 @@ export default function Chapter05MonteCarloPage() {
 // ------------------- MC Basic -------------------
 function MCBasicDemo() {
   const config = DEFAULT_CONFIG;
-  const qStar = useMemo(() => estimateTrueActionValues(config), [config]);
   const [episodesPerPair, setEpisodesPerPair] = useState(20);
   const [mode, setMode] = useState<'single-eval' | 'policy-iteration'>('policy-iteration');
   const [result, setResult] = useState<
-    | { type: 'single-eval'; q: number[][]; counts: number[][]; rmse: number }
-    | { type: 'policy-iteration'; iterations: number; finalPolicy: Policy; finalQ: number[][]; rmse: number; stable: boolean }
+    | { type: 'single-eval'; q: number[][]; counts: number[][]; rmse: number; policyName: string }
+    | { type: 'policy-iteration'; iterations: MCBasicIteration[]; finalPolicy: Policy; finalQ: number[][]; rmse: number; stable: boolean }
     | null
   >(null);
+  const [iterIndex, setIterIndex] = useState(0);
 
   function run() {
     if (mode === 'single-eval') {
-      const { qValues, returns } = mcBasic(config, episodesPerPair, 30);
+      const { policy, qValues, returns } = mcBasic(config, episodesPerPair, 30);
       const counts = returns.map((s) => s.map((a) => a.length));
-      const rmse = qTableRMSE(qValues, qStar);
-      setResult({ type: 'single-eval', q: qValues, counts, rmse });
+      const vTrue = solveStateValues(policy, config);
+      const qTrue = computeQValues(vTrue, config);
+      const rmse = qTableRMSE(qValues, qTrue);
+      setResult({ type: 'single-eval', q: qValues, counts, rmse, policyName: '随机策略（被评估）' });
+      setIterIndex(0);
     } else {
       const { iterations, finalPolicy, finalQ } = mcBasicPolicyIteration(
         config,
@@ -151,38 +164,105 @@ function MCBasicDemo() {
         30,
         20
       );
-      const rmse = qTableRMSE(finalQ, qStar);
+      const vTrue = solveStateValues(finalPolicy, config);
+      const qTrue = computeQValues(vTrue, config);
+      const rmse = qTableRMSE(finalQ, qTrue);
       setResult({
         type: 'policy-iteration',
-        iterations: iterations.length,
+        iterations,
         finalPolicy,
         finalQ,
         rmse,
         stable: iterations[iterations.length - 1]?.policyStable ?? false,
       });
+      setIterIndex(0);
     }
   }
 
-  const policy = useMemo(() => {
+  const displayPolicy = useMemo(() => {
     if (!result) return null;
     if (result.type === 'single-eval') return greedyPolicy(result.q);
-    return result.finalPolicy;
-  }, [result]);
+    if (result.type === 'policy-iteration') {
+      if (iterIndex === 0 && result.iterations.length > 0) {
+        return result.iterations[iterIndex].policyBefore;
+      }
+      return result.iterations[iterIndex]?.policyAfter ?? result.finalPolicy;
+    }
+    return null;
+  }, [result, iterIndex]);
 
-  const values = useMemo(() => {
+  const displayValues = useMemo(() => {
     if (!result) return null;
     if (result.type === 'single-eval') return actionValueToStateValue(result.q);
-    return actionValueToStateValue(result.finalQ);
-  }, [result]);
+    if (result.type === 'policy-iteration') {
+      return actionValueToStateValue(result.iterations[iterIndex]?.qEstimate ?? result.finalQ);
+    }
+    return null;
+  }, [result, iterIndex]);
+
+  const currentIter = useMemo(() => {
+    if (!result || result.type === 'single-eval') return null;
+    return result.iterations[iterIndex] ?? null;
+  }, [result, iterIndex]);
 
   return (
     <InteractiveDemo title="MC Basic：策略评估与策略迭代">
       <div className="grid lg:grid-cols-[1fr_340px] gap-6">
-        <div className="flex flex-col items-center justify-center bg-gray-50 rounded-xl p-6 border border-gray-200">
-          {policy ? (
-            <GridWorld config={config} policy={policy} values={values ?? undefined} showValues className="max-w-full" />
-          ) : (
-            <div className="text-gray-500">点击运行，查看 MC Basic 的策略与值函数</div>
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col items-center justify-center bg-gray-50 rounded-xl p-6 border border-gray-200">
+            {displayPolicy ? (
+              <GridWorld config={config} policy={displayPolicy} values={displayValues ?? undefined} showValues className="max-w-full" />
+            ) : (
+              <div className="text-gray-500">点击运行，查看 MC Basic 的策略与值函数</div>
+            )}
+          </div>
+          {result?.type === 'policy-iteration' && (
+            <div className="bg-white rounded-xl border border-gray-200 p-4">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold text-gray-800">
+                  策略迭代过程 —— 第 {iterIndex + 1}/{result.iterations.length} 轮
+                </h3>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={iterIndex === 0}
+                    onClick={() => setIterIndex((v) => v - 1)}
+                  >
+                    上一步
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={iterIndex >= result.iterations.length - 1}
+                    onClick={() => setIterIndex((v) => v + 1)}
+                  >
+                    下一步
+                  </Button>
+                </div>
+              </div>
+              <div className="mb-2">
+                <input
+                  type="range"
+                  min={0}
+                  max={result.iterations.length - 1}
+                  value={iterIndex}
+                  onChange={(e) => setIterIndex(Number(e.target.value))}
+                  className="w-full"
+                />
+              </div>
+              {currentIter && (
+                <div className="text-xs text-gray-600 space-y-1">
+                  <div>
+                    <strong>π_{currentIter.iteration}（policyBefore）→ </strong>
+                    MC 策略评估 → <strong>q_{'{π_' + currentIter.iteration + '}'}</strong> → 贪心改进 → <strong>π_{currentIter.iteration + 1}（policyAfter）</strong>
+                  </div>
+                  <div className="mt-2">
+                    策略稳定性：{currentIter.policyStable ? <span className="text-green-600 font-semibold">已稳定 ✓</span> : <span className="text-amber-600">未稳定</span>}
+                  </div>
+                </div>
+              )}
+            </div>
           )}
         </div>
         <div className="space-y-4">
@@ -229,14 +309,19 @@ function MCBasicDemo() {
                 {result.type === 'single-eval' ? (
                   <>
                     <div>总样本数：{(config.rows * config.cols * 5 * episodesPerPair).toLocaleString()}</div>
-                    <div>RMSE（相对 q*）：<span className="font-mono">{result.rmse.toFixed(4)}</span></div>
-                    <div>策略基于 MC 估计的 q 值贪心得到。</div>
+                    <div>RMSE(q_est, q_π)：<span className="font-mono">{result.rmse.toFixed(4)}</span></div>
+                    <div className="text-xs text-gray-500 mt-1">
+                      真实值由模型计算，仅用于验证 MC 估计；MC 算法训练本身不使用模型。
+                    </div>
                   </>
                 ) : (
                   <>
-                    <div>策略迭代轮数：<span className="font-mono font-semibold">{result.iterations}</span></div>
+                    <div>策略迭代轮数：<span className="font-mono font-semibold">{result.iterations.length}</span></div>
                     <div>策略是否稳定：<span className="font-mono">{result.stable ? '是 ✓' : '否'}</span></div>
-                    <div>最终 RMSE（相对 q*）：<span className="font-mono">{result.rmse.toFixed(4)}</span></div>
+                    <div>最终 RMSE(q_est, q_π)：<span className="font-mono">{result.rmse.toFixed(4)}</span></div>
+                    <div className="text-xs text-gray-500 mt-1">
+                      真实值由模型计算，仅用于验证 MC 估计；MC 算法训练本身不使用模型。
+                    </div>
                   </>
                 )}
               </CardContent>
@@ -254,9 +339,9 @@ function MCExploringStartsDemo() {
   const qStar = useMemo(() => estimateTrueActionValues(config), [config]);
   const [visitMode, setVisitMode] = useState<VisitMode>('first-visit');
   const [learnerState, setLearnerState] = useState<MCLearnerState>(() => createMCLearnerState(config));
-  const [rmseHistory, setRmseHistory] = useState<number[]>(() => {
+  const [rmseHistory, setRmseHistory] = useState<LearningPoint[]>(() => {
     const init = createMCLearnerState(config);
-    return [qTableRMSE(init.q, qStar)];
+    return [{ episode: 0, rmse: qTableRMSE(init.q, qStar) }];
   });
   const [lastTrajectory, setLastTrajectory] = useState<{ state: number; action: Action; reward: number; nextState: number }[]>([]);
   const learnerRef = useRef(learnerState);
@@ -276,7 +361,7 @@ function MCExploringStartsDemo() {
       );
       const rmse = qTableRMSE(newState.q, qStar);
       setLearnerState(newState);
-      setRmseHistory((prev) => [...prev, rmse]);
+      setRmseHistory((prev) => [...prev, { episode: newState.episodesCompleted, rmse }]);
       // Generate a sample trajectory for display
       const traj = mcExploringStarts(config, 1, 30, visitMode);
       setLastTrajectory(traj.lastTrajectory);
@@ -287,18 +372,9 @@ function MCExploringStartsDemo() {
   function reset() {
     const init = createMCLearnerState(config);
     setLearnerState(init);
-    setRmseHistory([qTableRMSE(init.q, qStar)]);
+    setRmseHistory([{ episode: 0, rmse: qTableRMSE(init.q, qStar) }]);
     setLastTrajectory([]);
   }
-
-  const chartData = useMemo(
-    () =>
-      rmseHistory.map((err, i) => ({
-        episode: i,
-        rmse: err,
-      })),
-    [rmseHistory]
-  );
 
   return (
     <MCDemoShell
@@ -310,7 +386,7 @@ function MCExploringStartsDemo() {
       onVisitModeChange={setVisitMode}
       onRun={runEpisodes}
       onReset={reset}
-      chartData={chartData}
+      chartData={rmseHistory}
       lastTrajectory={lastTrajectory}
     />
   );
@@ -324,15 +400,15 @@ function MCEpsilonGreedyDemo() {
   const [schedule, setSchedule] = useState<EpsilonSchedule>('fixed');
   const [visitMode, setVisitMode] = useState<VisitMode>('first-visit');
   const [learnerState, setLearnerState] = useState<MCLearnerState>(() => createMCLearnerState(config));
-  const [rmseHistory, setRmseHistory] = useState<number[]>(() => {
+  const [rmseHistory, setRmseHistory] = useState<LearningPoint[]>(() => {
     const init = createMCLearnerState(config);
-    return [qTableRMSE(init.q, qStar)];
+    return [{ episode: 0, rmse: qTableRMSE(init.q, qStar) }];
   });
   const [lastTrajectory, setLastTrajectory] = useState<{ state: number; action: Action; reward: number; nextState: number }[]>([]);
   const learnerRef = useRef(learnerState);
   learnerRef.current = learnerState;
 
-  const policy = useMemo(() => epsilonGreedyPolicy(learnerState.q, epsilon), [learnerState, epsilon]);
+  const policy = useMemo(() => epsilonGreedyPolicy(learnerState.q, learnerState.currentEpsilon), [learnerState]);
   const stateValues = useMemo(() => actionValueToStateValue(learnerState.q), [learnerState]);
 
   const runEpisodes = useCallback(
@@ -348,10 +424,9 @@ function MCEpsilonGreedyDemo() {
       );
       const rmse = qTableRMSE(newState.q, qStar);
       setLearnerState(newState);
-      setRmseHistory((prev) => [...prev, rmse]);
+      setRmseHistory((prev) => [...prev, { episode: newState.episodesCompleted, rmse }]);
       // Generate a sample trajectory for display
-      const currentEpsilon = computeEpsilon(schedule, epsilon, newState.episodesCompleted);
-      const traj = mcEpsilonGreedy(config, 1, 30, currentEpsilon, visitMode, schedule);
+      const traj = mcEpsilonGreedy(config, 1, 30, newState.currentEpsilon, visitMode, schedule);
       setLastTrajectory(traj.lastTrajectory);
     },
     [config, epsilon, schedule, qStar, visitMode]
@@ -360,18 +435,9 @@ function MCEpsilonGreedyDemo() {
   function reset() {
     const init = createMCLearnerState(config);
     setLearnerState(init);
-    setRmseHistory([qTableRMSE(init.q, qStar)]);
+    setRmseHistory([{ episode: 0, rmse: qTableRMSE(init.q, qStar) }]);
     setLastTrajectory([]);
   }
-
-  const chartData = useMemo(
-    () =>
-      rmseHistory.map((err, i) => ({
-        episode: i,
-        rmse: err,
-      })),
-    [rmseHistory]
-  );
 
   return (
     <MCDemoShell
@@ -383,12 +449,13 @@ function MCEpsilonGreedyDemo() {
       onVisitModeChange={setVisitMode}
       onRun={runEpisodes}
       onReset={reset}
-      chartData={chartData}
+      chartData={rmseHistory}
       lastTrajectory={lastTrajectory}
       epsilon={epsilon}
       onEpsilonChange={setEpsilon}
       schedule={schedule}
       onScheduleChange={setSchedule}
+      currentEpsilon={learnerState.currentEpsilon}
     />
   );
 }
@@ -409,6 +476,7 @@ interface MCDemoShellProps {
   onEpsilonChange?: (v: number) => void;
   schedule?: EpsilonSchedule;
   onScheduleChange?: (s: EpsilonSchedule) => void;
+  currentEpsilon?: number;
 }
 
 function MCDemoShell(props: MCDemoShellProps) {
@@ -427,6 +495,7 @@ function MCDemoShell(props: MCDemoShellProps) {
     onEpsilonChange,
     schedule,
     onScheduleChange,
+    currentEpsilon,
   } = props;
 
   return (
@@ -440,7 +509,7 @@ function MCDemoShell(props: MCDemoShellProps) {
             <LineChart
               data={chartData}
               xKey="episode"
-              xLabel="运行批次"
+              xLabel="回合数"
               yLabel="RMSE(q, q*)"
               series={[{ key: 'rmse', name: 'RMSE', color: '#2563eb' }]}
               height={200}
@@ -483,7 +552,10 @@ function MCDemoShell(props: MCDemoShellProps) {
               <div>已采样回合：<span className="font-mono font-semibold">{episodeCount}</span></div>
               <div>折扣因子：<span className="font-mono">{DEFAULT_CONFIG.gamma}</span></div>
               {schedule && (
-                <div>当前 ε 调度：<span className="font-mono">{schedule === 'fixed' ? '固定' : '衰减'}</span></div>
+                <div>当前 ε 调度：<span className="font-mono">{schedule === 'fixed' ? '固定' : schedule === 'decaying-with-floor' ? '衰减（带下限）' : 'GLIE'}</span></div>
+              )}
+              {currentEpsilon !== undefined && (
+                <div>当前 ε 值：<span className="font-mono">{currentEpsilon.toFixed(4)}</span></div>
               )}
             </CardContent>
           </Card>
@@ -513,7 +585,7 @@ function MCDemoShell(props: MCDemoShellProps) {
               </CardHeader>
               <CardContent className="space-y-3">
                 <Slider value={[epsilon]} min={0} max={1} step={0.05} onValueChange={([v]) => onEpsilonChange(v)} />
-                <div className="text-center font-mono text-sm text-gray-700">ε = {epsilon.toFixed(2)}</div>
+                <div className="text-center font-mono text-sm text-gray-700">ε₀ = {epsilon.toFixed(2)}</div>
                 {onScheduleChange && schedule !== undefined && (
                   <div>
                     <label className="text-xs text-gray-600 block mb-1">ε 调度方式</label>
@@ -523,12 +595,21 @@ function MCDemoShell(props: MCDemoShellProps) {
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="fixed">固定 ε</SelectItem>
-                        <SelectItem value="decaying">衰减 ε（GLIE）</SelectItem>
+                        <SelectItem value="decaying-with-floor">带最小探索率的衰减（不是 GLIE）</SelectItem>
+                        <SelectItem value="glie">GLIE（ε → 0）</SelectItem>
                       </SelectContent>
                     </Select>
-                    {schedule === 'decaying' && (
+                    {schedule === 'fixed' && (
+                      <p className="text-xs text-gray-500 mt-1">ε_k = ε₀，探索率始终不变。</p>
+                    )}
+                    {schedule === 'decaying-with-floor' && (
                       <p className="text-xs text-gray-500 mt-1">
-                        ε_k = max(0.05, ε₀ / √(k+1))，随训练逐步减小探索。
+                        ε_k = max(ε_min, ε₀ / √(k+1))，带最小探索率的衰减，不是 GLIE。
+                      </p>
+                    )}
+                    {schedule === 'glie' && (
+                      <p className="text-xs text-gray-500 mt-1">
+                        ε_k = ε₀ / √(k+1)，ε_k → 0，严格 GLIE。
                       </p>
                     )}
                   </div>

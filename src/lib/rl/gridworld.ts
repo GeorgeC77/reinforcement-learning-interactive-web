@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Unified GridWorld environment and RL utilities.
  *
  * Reference: Shiyu Zhao, "Mathematical Foundations of Reinforcement Learning"
@@ -27,7 +27,7 @@ export type Action = 0 | 1 | 2 | 3 | 4;
 export type StateIdx = number;
 export type TaskType = 'continuing' | 'episodic';
 
-export const ACTION_NAMES = ['上', '右', '下', '左', '停留'] as const;
+export const ACTION_NAMES = ['�?, '�?, '�?, '�?, '停留'] as const;
 export const ACTION_DELTAS: { dr: number; dc: number }[] = [
   { dr: -1, dc: 0 }, // up    (a1)
   { dr: 0, dc: 1 },  // right (a2)
@@ -183,8 +183,8 @@ export function step(
   const done = config.taskType === 'episodic' && reachedTarget;
   const actionName = ACTION_NAMES[action];
   const transitionText = hitBoundary
-    ? `s${state + 1} --${actionName}--> 撞边界，停留在 s${state + 1}，奖励 ${reward}`
-    : `s${state + 1} --${actionName}--> s${nextState + 1}，奖励 ${reward}`;
+    ? `s${state + 1} --${actionName}--> 撞边界，停留�?s${state + 1}，奖�?${reward}`
+    : `s${state + 1} --${actionName}--> s${nextState + 1}，奖�?${reward}`;
 
   return {
     nextState,
@@ -803,7 +803,7 @@ export function estimateActionValuesMC(
   config: GridWorldConfig,
   numEpisodes: number = 50,
   maxSteps: number = 30
-): { qValues: number[][]; returns: number[][][] } {
+): { policy: Policy; qValues: number[][]; returns: number[][][] } {
   const numStates = config.rows * config.cols;
   const returns: number[][][] = Array.from({ length: numStates }, () =>
     Array.from({ length: 5 }, () => [])
@@ -827,7 +827,7 @@ export function estimateActionValuesMC(
     )
   );
 
-  return { qValues, returns };
+  return { policy: behaviorPolicy, qValues, returns };
 }
 
 function generateTrajectoryFrom(
@@ -1415,7 +1415,7 @@ export function mcBasic(
   config: GridWorldConfig,
   numEpisodesPerPair: number = 20,
   maxSteps: number = 30
-): { qValues: number[][]; returns: number[][][] } {
+): { policy: Policy; qValues: number[][]; returns: number[][][] } {
   const numStates = config.rows * config.cols;
   const numActions = 5;
   const returns: number[][][] = Array.from({ length: numStates }, () =>
@@ -1442,11 +1442,11 @@ export function mcBasic(
     )
   );
 
-  return { qValues, returns };
+  return { policy: behaviorPolicy, qValues, returns };
 }
 
 /**
- * MC Basic policy iteration (Algorithm 5.1) — the COMPLETE textbook algorithm.
+ * MC Basic policy iteration (Algorithm 5.1) �?the COMPLETE textbook algorithm.
  *
  * for k = 0, 1, 2, ...:
  *   1. For each (s,a), sample episodes starting from (s,a), then follow π_k;
@@ -1522,6 +1522,7 @@ export interface MCLearnerState {
   visitCount: number[][];
   policy: Policy;
   episodesCompleted: number;
+  currentEpsilon: number;
 }
 
 export function createMCLearnerState(config: GridWorldConfig): MCLearnerState {
@@ -1533,6 +1534,7 @@ export function createMCLearnerState(config: GridWorldConfig): MCLearnerState {
     visitCount: Array.from({ length: numStates }, () => new Array(numActions).fill(0)),
     policy: randomPolicy(numStates, numActions),
     episodesCompleted: 0,
+    currentEpsilon: 0,
   };
 }
 
@@ -1583,13 +1585,14 @@ export function runMCExploringStartsEpisodes(
     visitCount,
     policy: greedyPolicy(q),
     episodesCompleted,
+    currentEpsilon: 0,
   };
 }
 
 /**
  * Incremental MC ε-Greedy: continues training from learnerState.
  * Does NOT reinitialize Q, returns, or counts.
- * No exploring starts — all actions sampled from ε-greedy policy.
+ * No exploring starts �?all actions sampled from ε-greedy policy.
  */
 export function runMCEpsilonGreedyEpisodes(
   learnerState: MCLearnerState,
@@ -1606,9 +1609,10 @@ export function runMCEpsilonGreedyEpisodes(
   const returnsSum = learnerState.returnsSum.map((row) => [...row]);
   const visitCount = learnerState.visitCount.map((row) => [...row]);
   let episodesCompleted = learnerState.episodesCompleted;
+  let currentEpsilon = learnerState.currentEpsilon;
 
   for (let ep = 0; ep < additionalEpisodes; ep++) {
-    const currentEpsilon = computeEpsilon(epsilonSchedule, baseEpsilon, episodesCompleted);
+    currentEpsilon = computeEpsilon(epsilonSchedule, baseEpsilon, episodesCompleted);
     episodesCompleted++;
 
     // No exploring starts: start from config.startState
@@ -1635,8 +1639,9 @@ export function runMCEpsilonGreedyEpisodes(
     q,
     returnsSum,
     visitCount,
-    policy: epsilonGreedyPolicy(q, baseEpsilon),
+    policy: epsilonGreedyPolicy(q, currentEpsilon),
     episodesCompleted,
+    currentEpsilon,
   };
 }
 
@@ -1719,7 +1724,7 @@ export function mcExploringStarts(
  * Epsilon schedule type: 'fixed' keeps epsilon constant, 'decaying' uses
  * epsilon_k = max(epsilonMin, epsilon0 / sqrt(k + 1)) (GLIE-like).
  */
-export type EpsilonSchedule = 'fixed' | 'decaying';
+export type EpsilonSchedule = 'fixed' | 'decaying-with-floor' | 'glie';
 
 export function computeEpsilon(
   schedule: EpsilonSchedule,
@@ -1728,15 +1733,18 @@ export function computeEpsilon(
   epsilonMin: number = 0.05
 ): number {
   if (schedule === 'fixed') return baseEpsilon;
-  // decaying: epsilon_k = max(epsilonMin, epsilon0 / sqrt(k + 1))
-  return Math.max(epsilonMin, baseEpsilon / Math.sqrt(episodeIndex + 1));
+  if (schedule === 'decaying-with-floor') {
+    return Math.max(epsilonMin, baseEpsilon / Math.sqrt(episodeIndex + 1));
+  }
+  // glie: epsilon_k = epsilon0 / sqrt(k + 1) -> 0
+  return baseEpsilon / Math.sqrt(episodeIndex + 1);
 }
 
 /**
  * Monte Carlo epsilon-greedy on-policy control.
  *
  * Per textbook Section 5.4 ("Learning without exploring starts"), the initial
- * action is NOT externally forced. All actions — including the first — are
+ * action is NOT externally forced. All actions �?including the first �?are
  * sampled from the current ε-greedy policy. Exploration is guaranteed by
  * π(a|s) > 0 for all (s,a).
  *
@@ -1797,14 +1805,16 @@ export function mcEpsilonGreedy(
 function computeImportanceSamplingRatio(
   trajectory: { state: number; action: Action }[],
   targetPolicy: Policy,
-  behaviorPolicy: Policy
+  behaviorPolicy: Policy,
+  startIndex = 0
 ): number {
   let rho = 1;
-  for (const step of trajectory) {
-    const targetProb = targetPolicy[step.state][step.action];
-    const behaviorProb = behaviorPolicy[step.state][step.action];
-    if (behaviorProb === 0) return 0;
-    rho *= targetProb / behaviorProb;
+  for (let i = startIndex; i < trajectory.length; i++) {
+    const { state, action } = trajectory[i];
+    const bProb = behaviorPolicy[state][action];
+    const piProb = targetPolicy[state][action];
+    if (bProb === 0) return 0;
+    rho *= piProb / bProb;
   }
   return rho;
 }
@@ -1844,7 +1854,7 @@ export function offPolicyMCEvaluation(
         for (let ep = 0; ep < numEpisodesPerPair; ep++) {
           const traj = generateTrajectory(s, behaviorPolicy, config, maxSteps, a as Action);
           if (s === 0 && a === 0 && ep === 0) lastTrajectory = traj;
-          const rho = computeImportanceSamplingRatio(traj, targetPolicy, behaviorPolicy);
+          const rho = computeImportanceSamplingRatio(traj, targetPolicy, behaviorPolicy, 1);
           if (s === 0 && a === 0 && ep === 0) lastRho = rho;
           const g = discountedReturn(traj, config.gamma);
           estimates.push(rho * g);
@@ -1859,7 +1869,7 @@ export function offPolicyMCEvaluation(
         for (let ep = 0; ep < numEpisodesPerPair; ep++) {
           const traj = generateTrajectory(s, behaviorPolicy, config, maxSteps, a as Action);
           if (s === 0 && a === 0 && ep === 0) lastTrajectory = traj;
-          const rho = computeImportanceSamplingRatio(traj, targetPolicy, behaviorPolicy);
+          const rho = computeImportanceSamplingRatio(traj, targetPolicy, behaviorPolicy, 1);
           if (s === 0 && a === 0 && ep === 0) lastRho = rho;
           const g = discountedReturn(traj, config.gamma);
           numerator += rho * g;

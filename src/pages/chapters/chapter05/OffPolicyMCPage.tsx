@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+﻿import { useState, useMemo } from 'react';
 import { Scale, ShieldAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
@@ -233,7 +233,7 @@ export default function Chapter05OffPolicyMCPage() {
                   <th>π(a|s)</th>
                   <th>b(a|s)</th>
                   <th>单步比 ρ_t</th>
-                  <th>累积 ρ_{'{0:t}'}</th>
+                  <th>累积 ρ_{'{1:t}'}</th>
                 </tr>
               </thead>
               <tbody className="text-gray-700">
@@ -242,7 +242,7 @@ export default function Chapter05OffPolicyMCPage() {
                   const bProb = behaviorPolicy[step.state][step.action];
                   const ratio = bProb === 0 ? 0 : piProb / bProb;
                   let cum = 1;
-                  for (let i = 0; i <= idx; i++) {
+                  for (let i = 1; i <= idx; i++) {
                     const s = result.lastTrajectory[i].state;
                     const a = result.lastTrajectory[i].action;
                     const bp = behaviorPolicy[s][a];
@@ -256,17 +256,25 @@ export default function Chapter05OffPolicyMCPage() {
                       <td>{step.reward.toFixed(2)}</td>
                       <td>{piProb.toFixed(3)}</td>
                       <td>{bProb.toFixed(3)}</td>
-                      <td>{ratio.toFixed(3)}</td>
-                      <td className="font-mono">{cum.toFixed(3)}</td>
+                      <td>{idx === 0 ? '\u2014' : ratio.toFixed(3)}</td>
+                      <td className='font-mono'>{idx === 0 ? '1.000' : cum.toFixed(3)}</td>
                     </tr>
                   );
                 })}
               </tbody>
             </table>
           </div>
-          <p className="mt-3 text-sm text-gray-600">
-            对 (s0,a0) 的重要性采样比率为上表最后一行的累积 ρ，回报 G 乘以该比率即得到目标策略下的加权回报。
-          </p>
+          <div className='mt-3 space-y-2'>
+            <p className='text-sm text-gray-600'>
+              <strong>第 0 步：</strong>初始动作 a_0 已条件化（由外部指定），不计入重要性权重，ρ = 1。
+            </p>
+            <p className='text-sm text-gray-600'>
+              <strong>第 1 步起：</strong>累积权重从第 1 步开始计算 ρ_{'{1:t}'} = ∏_{'{k=1}'}^t π(a_k|s_k) / b(a_k|s_k)。
+            </p>
+            <p className='text-sm text-gray-600'>
+              对 (s0,a0) 的重要性采样比率为上表最后一行的累积 ρ，回报 G 乘以该比率即得到目标策略下的加权回报。长度为 1 的轨迹，其 importance ratio 等于 1。
+            </p>
+          </div>
         </InteractiveDemo>
       )}
 
@@ -282,6 +290,7 @@ export default function Chapter05OffPolicyMCPage() {
                   <li>同策略（on-policy）用当前策略本身采样；异策略（off-policy）用另一个行为策略采样。</li>
                   <li>重要性采样通过概率比 ρ 把行为策略样本“转换”为目标策略样本。</li>
                   <li>普通 IS 无偏但方差大；加权 IS 有偏但方差小，更实用。</li>
+                  <li>当初始 (s,a) 已条件化时，重要性比率从下一动作开始计算（ρ_{'{1:t}'}），初始动作不纳入比率。</li>
                   <li>行为策略必须覆盖目标策略：b(a|s) &gt; 0  whenever π(a|s) &gt; 0。</li>
                 </ul>
               ),
@@ -291,6 +300,12 @@ export default function Chapter05OffPolicyMCPage() {
               title: 'Q: 为什么行为策略需要覆盖目标策略？',
               content:
                 '如果目标策略会在某个状态选择动作 a，但行为策略选择 a 的概率为 0，那么我们就永远采不到该动作下的轨迹，无法估计 q_π(s,a)。',
+            },
+            {
+              id: 'qa1b',
+              title: 'Q: 为什么初始动作不计入重要性权重？',
+              content:
+                '在估计 q_π(s0,a0) 时，初始动作 a0 是外部条件给定的——无论目标策略还是行为策略，都以相同条件产生 a0。因此 a0 的概率比恒为 1，不需要纳入重要性比率。比率只从 a1 开始计算。',
             },
             {
               id: 'qa2',
