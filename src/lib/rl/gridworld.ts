@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Unified GridWorld environment and RL utilities.
  *
  * Reference: Shiyu Zhao, "Mathematical Foundations of Reinforcement Learning"
@@ -27,7 +27,7 @@ export type Action = 0 | 1 | 2 | 3 | 4;
 export type StateIdx = number;
 export type TaskType = 'continuing' | 'episodic';
 
-export const ACTION_NAMES = ['�?, '�?, '�?, '�?, '停留'] as const;
+export const ACTION_NAMES = ['上', '右', '下', '左', '停留'] as const;
 export const ACTION_DELTAS: { dr: number; dc: number }[] = [
   { dr: -1, dc: 0 }, // up    (a1)
   { dr: 0, dc: 1 },  // right (a2)
@@ -183,8 +183,8 @@ export function step(
   const done = config.taskType === 'episodic' && reachedTarget;
   const actionName = ACTION_NAMES[action];
   const transitionText = hitBoundary
-    ? `s${state + 1} --${actionName}--> 撞边界，停留�?s${state + 1}，奖�?${reward}`
-    : `s${state + 1} --${actionName}--> s${nextState + 1}，奖�?${reward}`;
+    ? `s${state + 1} --${actionName}--> 撞边界，停留在 s${state + 1}，奖励 ${reward}`
+    : `s${state + 1} --${actionName}--> s${nextState + 1}，奖励 ${reward}`;
 
   return {
     nextState,
@@ -794,6 +794,41 @@ export function actionValueToStateValue(qValues: number[][]): StateValues {
 }
 
 /**
+ * State values under a given policy: V(s) = Σ_a π(a|s) · Q(s,a)
+ */
+export function policyWeightedStateValues(
+  qValues: number[][],
+  policy: Policy
+): number[] {
+  return qValues.map((qRow, s) =>
+    qRow.reduce((sum, qValue, a) => sum + policy[s][a] * qValue, 0)
+  );
+}
+
+/**
+ * Deterministic greedy policy — always picks first maximum action.
+ * Useful for stable tie-breaking in policy iteration convergence checks.
+ */
+export function deterministicGreedyPolicy(
+  qValues: number[][],
+  config?: GridWorldConfig
+): Policy {
+  return qValues.map((q, s) => {
+    const dist = new Array(q.length).fill(0);
+    if (config && isTerminal(s, config)) {
+      dist[4] = 1;
+      return dist;
+    }
+    const maxQ = Math.max(...q);
+    const bestAction = q.findIndex(
+      value => Math.abs(value - maxQ) < 1e-9
+    );
+    dist[bestAction] = 1;
+    return dist;
+  });
+}
+
+/**
  * Estimate action values for a FIXED policy using MC (first-visit every-episode).
  * This is a single policy-evaluation step, NOT the complete MC Basic control.
  * For each (s,a), run numEpisodes episodes and average returns.
@@ -827,7 +862,7 @@ export function estimateActionValuesMC(
     )
   );
 
-  return { policy: behaviorPolicy, qValues, returns };
+  return { policy, qValues, returns };
 }
 
 function generateTrajectoryFrom(
@@ -835,14 +870,15 @@ function generateTrajectoryFrom(
   startAction: Action,
   policy: Policy,
   config: GridWorldConfig,
-  maxSteps: number
+  horizonT: number
 ): { reward: number }[] {
   const traj: { reward: number }[] = [];
+  // first transition uses 1 step of the horizon
   const first = step(startState, startAction, config);
   traj.push({ reward: first.reward });
   let state = first.nextState;
 
-  for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
+  for (let stepIdx = 1; stepIdx < horizonT; stepIdx++) {
     if (isTerminal(state, config)) break;
     const action = sampleAction(policy[state]);
     const result = step(state, action, config);
@@ -1446,7 +1482,7 @@ export function mcBasic(
 }
 
 /**
- * MC Basic policy iteration (Algorithm 5.1) �?the COMPLETE textbook algorithm.
+ * MC Basic policy iteration (Algorithm 5.1) — the COMPLETE textbook algorithm.
  *
  * for k = 0, 1, 2, ...:
  *   1. For each (s,a), sample episodes starting from (s,a), then follow π_k;
@@ -1463,6 +1499,7 @@ export interface MCBasicIteration {
   qEstimate: number[][];
   policyAfter: Policy;
   policyStable: boolean;
+  changedStateCount: number;
 }
 
 export function mcBasicPolicyIteration(
@@ -1485,13 +1522,18 @@ export function mcBasicPolicyIteration(
     // Step 1: MC policy evaluation of current policy
     const { qValues } = estimateActionValuesMC(policy, config, episodesPerPair, maxSteps);
 
-    // Step 2: greedy policy improvement
-    const newPolicy = greedyPolicy(qValues);
+    // Step 2: deterministic greedy policy improvement
+    const newPolicy = deterministicGreedyPolicy(qValues, config);
 
-    // Step 3: check stability
+    // Step 3: check stability (deterministic tie-breaking)
     const policyStable = policy.every((dist, s) =>
       dist.every((p, a) => Math.abs(p - newPolicy[s][a]) < 1e-9)
     );
+
+    const changedStateCount = policy.reduce((count, dist, s) => {
+      const changed = !dist.every((p, a) => Math.abs(p - newPolicy[s][a]) < 1e-9);
+      return count + (changed ? 1 : 0);
+    }, 0);
 
     iterations.push({
       iteration: k,
@@ -1499,6 +1541,7 @@ export function mcBasicPolicyIteration(
       qEstimate: qValues.map((row) => [...row]),
       policyAfter: newPolicy.map((row) => [...row]),
       policyStable,
+      changedStateCount,
     });
 
     policy = newPolicy;
@@ -1592,7 +1635,7 @@ export function runMCExploringStartsEpisodes(
 /**
  * Incremental MC ε-Greedy: continues training from learnerState.
  * Does NOT reinitialize Q, returns, or counts.
- * No exploring starts �?all actions sampled from ε-greedy policy.
+ * No exploring starts — all actions sampled from ε-greedy policy.
  */
 export function runMCEpsilonGreedyEpisodes(
   learnerState: MCLearnerState,
@@ -1744,7 +1787,7 @@ export function computeEpsilon(
  * Monte Carlo epsilon-greedy on-policy control.
  *
  * Per textbook Section 5.4 ("Learning without exploring starts"), the initial
- * action is NOT externally forced. All actions �?including the first �?are
+ * action is NOT externally forced. All actions — including the first — are
  * sampled from the current ε-greedy policy. Exploration is guaranteed by
  * π(a|s) > 0 for all (s,a).
  *
