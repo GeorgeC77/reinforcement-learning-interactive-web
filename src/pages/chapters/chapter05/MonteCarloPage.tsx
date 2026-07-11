@@ -374,9 +374,9 @@ function MCExploringStartsDemo() {
 }
 
 function generateSampleTrajExploring(config: typeof DEFAULT_CONFIG, horizonT: number) {
-  const init = createMCLearnerState(config);
-  const r = runMCExploringStartsEpisodes(init, config, 1, horizonT, 'first-visit');
-  return [] as any; // trajectory not needed from this helper
+  const { generateTrajectory } = require('@/lib/rl/gridworld');
+  const s = Math.floor(Math.random() * 9), a = Math.floor(Math.random() * 5) as Action;
+  return generateTrajectory(s, Array(9).fill(Array(5).fill(0.2)), config, horizonT, a);
 }
 
 // ------------------- MC ε-Greedy -------------------
