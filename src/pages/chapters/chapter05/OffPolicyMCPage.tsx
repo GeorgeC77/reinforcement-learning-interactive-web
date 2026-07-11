@@ -19,12 +19,14 @@ import ConceptAccordion from '@/components/ConceptAccordion';
 import {
   DEFAULT_CONFIG,
   ACTION_NAMES,
-  type Action,
+  type Policy,
   greedyPolicy,
-  epsilonGreedyPolicy,
   estimateTrueActionValues,
   offPolicyMCEvaluation,
   qTableRMSE,
+  policyWeightedStateValues,
+  solveStateValues,
+  type TrajectoryStep,
 } from '@/lib/rl/gridworld';
 
 type EstimateType = 'ordinary' | 'weighted';
@@ -36,20 +38,35 @@ export default function Chapter05OffPolicyMCPage() {
 
   const [epsilon, setEpsilon] = useState(0.5);
   const [episodesPerPair, setEpisodesPerPair] = useState(20);
+  const [horizonT, setHorizonT] = useState(30);
   const [type, setType] = useState<EstimateType>('ordinary');
   const [result, setResult] = useState<{
     qValues: number[][];
     qHistory: number[][][];
-    lastTrajectory: { state: number; action: Action; reward: number; nextState: number }[];
+    lastTrajectory: TrajectoryStep[];
     lastRho: number;
   } | null>(null);
 
-  const behaviorPolicy = useMemo(() => epsilonGreedyPolicy(qStar, epsilon), [qStar, epsilon]);
+  // Behavior policy is an epsilon-soft version of the deterministic target policy:
+  // b(a|s) = (1-ε)π(a|s) + ε/|A|.
+  // This construction does not need qStar; qStar is only used to define the target policy and for RMSE validation.
+  const behaviorPolicy: Policy = useMemo(() => {
+    const numActions = 5;
+    return targetPolicy.map((row) =>
+      row.map((p) => (1 - epsilon) * p + epsilon / numActions)
+    );
+  }, [targetPolicy, epsilon]);
 
   function run() {
-    const res = offPolicyMCEvaluation(targetPolicy, behaviorPolicy, config, episodesPerPair, type, 30);
+    const res = offPolicyMCEvaluation(targetPolicy, behaviorPolicy, config, episodesPerPair, type, horizonT);
     setResult(res);
   }
+
+  const targetValues = useMemo(() => policyWeightedStateValues(qStar, targetPolicy), [qStar, targetPolicy]);
+  const behaviorValues = useMemo(() => solveStateValues(behaviorPolicy, config), [behaviorPolicy, config]);
+  const estimatedTargetValues = result
+    ? policyWeightedStateValues(result.qValues, targetPolicy)
+    : null;
 
   const rmse = useMemo(() => {
     if (!result) return null;
@@ -73,10 +90,13 @@ export default function Chapter05OffPolicyMCPage() {
           </div>
         </div>
         <h1 className="text-3xl md:text-4xl font-bold text-gray-900 mb-3">
-          第 5 章 异策略蒙特卡洛与重要性采样
+          教材拓展：异策略蒙特卡洛与重要性采样
         </h1>
         <p className="text-gray-600 max-w-2xl mx-auto">
           用行为策略 b 采样数据，通过重要性采样估计目标策略 π 的动作值。这是模型-free 策略评估的强大工具。
+        </p>
+        <p className="text-gray-500 text-sm max-w-2xl mx-auto mt-2">
+          本页面预先使用模型计算 q*，仅用于构造一个可控的目标策略和验证估计误差。普通/加权重要性采样的估计过程本身没有访问环境模型。
         </p>
         <p className="mt-4 text-sm text-amber-700 flex items-center justify-center gap-2">
           <ShieldAlert className="w-4 h-4" />
@@ -120,12 +140,12 @@ export default function Chapter05OffPolicyMCPage() {
       <InteractiveDemo title="目标策略 vs 行为策略">
         <div className="grid md:grid-cols-2 gap-6">
           <div className="flex flex-col items-center bg-gray-50 rounded-xl p-6 border border-gray-200">
-            <h3 className="text-sm font-semibold text-gray-700 mb-3">目标策略 π（确定性贪心）</h3>
-            <GridWorld config={config} policy={targetPolicy} values={qStar.map((row) => Math.max(...row))} showValues className="max-w-full" />
+            <h3 className="text-sm font-semibold text-gray-700 mb-3">目标策略 π（确定性贪心）与 V_π</h3>
+            <GridWorld config={config} policy={targetPolicy} values={targetValues} showValues className="max-w-full" />
           </div>
           <div className="flex flex-col items-center bg-gray-50 rounded-xl p-6 border border-gray-200">
-            <h3 className="text-sm font-semibold text-gray-700 mb-3">行为策略 b（ε-贪心）</h3>
-            <GridWorld config={config} policy={behaviorPolicy} values={qStar.map((row) => Math.max(...row))} showValues className="max-w-full" />
+            <h3 className="text-sm font-semibold text-gray-700 mb-3">行为策略 b（ε-soft）与 V_b</h3>
+            <GridWorld config={config} policy={behaviorPolicy} values={behaviorValues} showValues className="max-w-full" />
           </div>
         </div>
       </InteractiveDemo>
@@ -139,7 +159,7 @@ export default function Chapter05OffPolicyMCPage() {
                   <GridWorld
                     config={config}
                     policy={greedyPolicy(result.qValues)}
-                    values={result.qValues.map((row) => Math.max(...row))}
+                    values={estimatedTargetValues ?? undefined}
                     showValues
                     className="max-w-full"
                   />
@@ -186,6 +206,18 @@ export default function Chapter05OffPolicyMCPage() {
                     <span className="font-mono">{episodesPerPair}</span>
                   </div>
                   <Slider value={[episodesPerPair]} min={1} max={100} step={1} onValueChange={([v]) => setEpisodesPerPair(v)} />
+                </div>
+                <div>
+                  <label className="text-sm text-gray-700 block mb-1">轨迹长度 T</label>
+                  <Select value={String(horizonT)} onValueChange={(v) => setHorizonT(Number(v))}>
+                    <SelectTrigger><SelectValue/></SelectTrigger>
+                    <SelectContent>
+                      {[10, 20, 30, 50, 100, 200].map((t) => (
+                        <SelectItem key={t} value={String(t)}>T={t}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-gray-500 mt-1">当前为 continuing task，使用长度为 T 的截断轨迹。RMSE 同时包含有限样本误差和截断误差。</p>
                 </div>
                 <div>
                   <label className="text-sm text-gray-700 block mb-1">估计方式</label>

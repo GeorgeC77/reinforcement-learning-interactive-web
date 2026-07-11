@@ -1251,28 +1251,6 @@ export function tdLambdaPrediction(
 }
 
 /**
- * Stochastic gradient descent on a quadratic loss f(w) = (w - wTrue)^2.
- * Returns the history of parameter estimates.
- */
-export function sgdQuadratic(
-  wTrue: number,
-  initialW: number,
-  alpha: number,
-  noiseStd: number,
-  iterations: number
-): number[] {
-  const history: number[] = [initialW];
-  let w = initialW;
-  for (let k = 0; k < iterations; k++) {
-    const noise = (Math.random() * 2 - 1) * noiseStd;
-    const gradient = 2 * (w - wTrue) + noise;
-    w -= alpha * gradient;
-    history.push(w);
-  }
-  return history;
-}
-
-/**
  * Softmax policy from action preferences.
  */
 function softmaxPolicy(preferences: number[]): number[] {
@@ -1363,84 +1341,6 @@ export function reinforceWithBaseline(
   }
 
   return { thetaHistory, policyHistory, rewardHistory, baselineHistory };
-}
-
-/**
- * Mean estimation by sample average (motivating example for MC and SA).
- * Returns the history of estimates.
- */
-export function sampleMeanEstimation(
-  trueMean: number,
-  initialEstimate: number,
-  samples: number
-): { estimates: number[]; samples: number[] } {
-  let estimate = initialEstimate;
-  const estimates: number[] = [estimate];
-  const sampleHistory: number[] = [];
-
-  for (let i = 0; i < samples; i++) {
-    const x = trueMean + (Math.random() * 2 - 1);
-    sampleHistory.push(x);
-    estimate += (x - estimate) / (i + 1);
-    estimates.push(estimate);
-  }
-
-  return { estimates, samples: sampleHistory };
-}
-
-/**
- * Robbins-Monro algorithm for finding root of g(w) = E[f(w, eta)] = 0.
- * Here we solve g(w) = w - wTrue = 0 with noisy observations.
- * stepSizes is an array of alpha_k.
- */
-export function robbinsMonro(
-  wTrue: number,
-  initialW: number,
-  stepSizes: number[]
-): number[] {
-  const history: number[] = [initialW];
-  let w = initialW;
-
-  for (const alpha of stepSizes) {
-    const noise = (Math.random() * 2 - 1) * 0.5;
-    const observation = w - wTrue + noise;
-    w -= alpha * observation;
-    history.push(w);
-  }
-
-  return history;
-}
-
-/**
- * Dvoretzky-style mean estimation: w_{k+1} = w_k + alpha_k (x_k - w_k).
- * Returns the history of estimates.
- */
-export function dvoretzkyMeanEstimation(
-  trueMean: number,
-  initialW: number,
-  stepSizes: number[]
-): number[] {
-  const history: number[] = [initialW];
-  let w = initialW;
-
-  for (const alpha of stepSizes) {
-    const x = trueMean + (Math.random() * 2 - 1);
-    w += alpha * (x - w);
-    history.push(w);
-  }
-
-  return history;
-}
-
-/**
- * Generate step sizes alpha_k = 1 / k^power, optionally shifted.
- */
-export function powerStepSizes(
-  n: number,
-  power: number = 1,
-  offset: number = 1
-): number[] {
-  return Array.from({ length: n }, (_, i) => 1 / Math.pow(i + offset, power));
 }
 
 /**
@@ -1780,7 +1680,7 @@ export function offPolicyMCEvaluation(
 ): {
   qValues: number[][];
   qHistory: number[][][];
-  lastTrajectory: { state: number; action: Action; reward: number; nextState: number }[];
+  lastTrajectory: TrajectoryStep[];
   lastRho: number;
 } {
   const numStates = config.rows * config.cols;
