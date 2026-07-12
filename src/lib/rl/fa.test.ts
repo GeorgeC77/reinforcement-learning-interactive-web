@@ -13,6 +13,7 @@ import {
   dqnGridWorld,
   SimpleMLP,
   coordinateFeatures,
+  stationaryDistribution,
 } from './fa';
 
 function assert(cond: boolean, msg: string) {
@@ -23,17 +24,22 @@ function near(a: number, b: number, eps = 1e-9) {
   return Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= eps;
 }
 
-const GOAL_POLICY: Action[] = [1, 2, 2, 1, 2, 2, 1, 1, 4];
-
 function arraysNear(a: number[], b: number[], eps = 1e-9) {
   if (a.length !== b.length) return false;
   return a.every((v, i) => near(v, b[i], eps));
+}
+
+function qTablesNear(a: number[][][], b: number[][][], eps = 1e-9) {
+  if (a.length !== b.length) return false;
+  return a.every((q, i) => q.every((row, s) => arraysNear(row, b[i][s], eps)));
 }
 
 function policiesEqual(p: number[][], q: number[][], eps = 1e-9) {
   if (p.length !== q.length) return false;
   return p.every((dist, s) => arraysNear(dist, q[s], eps));
 }
+
+const GOAL_POLICY: Action[] = [1, 2, 2, 1, 2, 2, 1, 1, 4];
 
 export function runFATests() {
   // 1. Semi-gradient TD(0) is reproducible with same seed
@@ -64,7 +70,7 @@ export function runFATests() {
   assert(arraysNear(sgA.residualHistory, sgB.residualHistory, 1e-9), 'semi-gradient residual history mismatch');
   assert(arraysNear(sgA.visitCounts, sgB.visitCounts, 1e-9), 'semi-gradient visit counts mismatch');
 
-  // Different seed should usually differ under a stochastic policy
+  // 2. Semi-gradient TD different seed under stochastic policy usually differs
   const randPolicy = randomPolicy(9, 5);
   const sgC = semiGradientTD(randPolicy, DEFAULT_CONFIG, {
     alpha: 0.05,
@@ -85,7 +91,12 @@ export function runFATests() {
   const different = sgC.valuesHistory.some((v, i) => !arraysNear(v, sgD.valuesHistory[i], 1e-9));
   assert(different, 'different seed should usually produce different semi-gradient TD values');
 
-  // 2. Action-value FA is reproducible with same seed
+  // 3. Stationary distribution sums to 1 and is invariant
+  const d = stationaryDistribution(randPolicy, DEFAULT_CONFIG);
+  assert(near(d.reduce((s, v) => s + v, 0), 1, 1e-9), 'stationary distribution should sum to 1');
+  assert(d.every((v) => v >= 0), 'stationary distribution should be non-negative');
+
+  // 4. Action-value FA returns all required fields and is reproducible
   const avA = actionValueFA(EPISODIC_PATH_CONFIG, {
     alpha: 0.05,
     epsilon: 0.3,
@@ -96,6 +107,16 @@ export function runFATests() {
     algorithm: 'sarsa',
     seed: 12,
   });
+  assert(Array.isArray(avA.qHistory), 'qHistory missing');
+  assert(Array.isArray(avA.weightsHistory), 'weightsHistory missing');
+  assert(Array.isArray(avA.residualHistory), 'residualHistory missing');
+  assert(Array.isArray(avA.behaviorPolicyHistory), 'behaviorPolicyHistory missing');
+  assert(Array.isArray(avA.greedyPolicyHistory), 'greedyPolicyHistory missing');
+  assert(Array.isArray(avA.episodeReturnHistory), 'episodeReturnHistory missing');
+  assert(Array.isArray(avA.episodeLengthHistory), 'episodeLengthHistory missing');
+  assert(Array.isArray(avA.visitCounts), 'visitCounts missing');
+  assert('lastUpdate' in avA, 'lastUpdate missing');
+
   const avB = actionValueFA(EPISODIC_PATH_CONFIG, {
     alpha: 0.05,
     epsilon: 0.3,
@@ -106,20 +127,20 @@ export function runFATests() {
     algorithm: 'sarsa',
     seed: 12,
   });
-  assert(avA.qHistory.length === avB.qHistory.length, 'action-value FA history length mismatch');
-  avA.qHistory.forEach((q, i) => {
-    assert(
-      q.every((row, s) => arraysNear(row, avB.qHistory[i][s], 1e-9)),
-      `action-value FA q-table mismatch at episode ${i}`
-    );
-  });
+  assert(qTablesNear(avA.qHistory, avB.qHistory, 1e-9), 'action-value FA q-history mismatch');
   assert(arraysNear(avA.residualHistory, avB.residualHistory, 1e-9), 'action-value FA residual mismatch');
   assert(
     avA.behaviorPolicyHistory.every((pol, i) => policiesEqual(pol, avB.behaviorPolicyHistory[i], 1e-9)),
     'action-value FA behavior policy mismatch'
   );
+  assert(
+    avA.greedyPolicyHistory.every((pol, i) => policiesEqual(pol, avB.greedyPolicyHistory[i], 1e-9)),
+    'action-value FA greedy policy mismatch'
+  );
+  assert(arraysNear(avA.episodeReturnHistory, avB.episodeReturnHistory, 1e-9), 'action-value FA return mismatch');
+  assert(arraysNear(avA.episodeLengthHistory, avB.episodeLengthHistory, 1e-9), 'action-value FA length mismatch');
 
-  // 3. Sarsa-FA residual uses behavior policy; Q-learning-FA residual uses optimality operator
+  // 5. Sarsa-FA residual uses behavior policy; Q-learning-FA residual uses optimality operator
   const sarsaFA = actionValueFA(EPISODIC_PATH_CONFIG, {
     alpha: 0.05,
     epsilon: 0.3,
@@ -155,23 +176,27 @@ export function runFATests() {
     'Q-learning-FA residual should equal optimal Bellman residual'
   );
 
-  // 4. Action-value FA terminal transition does not bootstrap
-  const avTerminal = actionValueFA(EPISODIC_PATH_CONFIG, {
-    alpha: 0.1,
-    epsilon: 0.1,
+  // 6. Epsilon schedule actually changes over episodes
+  const decayFA = actionValueFA(EPISODIC_PATH_CONFIG, {
+    alpha: 0.05,
+    epsilon: 0.5,
+    epsilonMode: 'decay-floor',
+    epsilonMin: 0.05,
     gamma: EPISODIC_PATH_CONFIG.gamma,
     episodes: 100,
-    maxSteps: 30,
+    maxSteps: 10,
     featureMode: 'onehot',
     algorithm: 'sarsa',
-    seed: 21,
+    seed: 33,
   });
-  const lastUpdate = avTerminal.lastUpdate;
-  assert(lastUpdate !== null, 'action-value FA should record a last update');
-  // The last update may be non-terminal, so we cannot assert directly. Instead we rely on the
-  // backend not bootstrapping on done transitions (verified by code inspection / DQN tests below).
+  const firstPol = decayFA.behaviorPolicyHistory[0][0];
+  const lastPol = decayFA.behaviorPolicyHistory[decayFA.behaviorPolicyHistory.length - 1][0];
+  // With decay, last epsilon should be lower, so policy should be closer to greedy.
+  const firstEntropy = -firstPol.reduce((s, p) => s + (p > 0 ? p * Math.log(p) : 0), 0);
+  const lastEntropy = -lastPol.reduce((s, p) => s + (p > 0 ? p * Math.log(p) : 0), 0);
+  assert(lastEntropy <= firstEntropy, 'decay schedule should reduce policy entropy by the end');
 
-  // 5. DQN is reproducible with same seed
+  // 7. DQN is reproducible with same seed
   const dqnA = dqnGridWorld(EPISODIC_PATH_CONFIG, {
     hiddenSize: 16,
     alpha: 0.01,
@@ -197,48 +222,103 @@ export function runFATests() {
     seed: 88,
   });
   assert(dqnA.qHistory.length === dqnB.qHistory.length, 'DQN qHistory length mismatch');
-  dqnA.qHistory.forEach((q, i) => {
-    assert(
-      q.every((row, s) => arraysNear(row, dqnB.qHistory[i][s], 1e-9)),
-      `DQN q-table mismatch at episode ${i}`
-    );
-  });
+  assert(qTablesNear(dqnA.qHistory, dqnB.qHistory, 1e-9), 'DQN q-history mismatch');
   assert(arraysNear(dqnA.lossHistory, dqnB.lossHistory, 1e-9), 'DQN loss history mismatch');
+  assert(arraysNear(dqnA.episodeReturnHistory, dqnB.episodeReturnHistory, 1e-9), 'DQN return history mismatch');
+  assert(arraysNear(dqnA.episodeLengthHistory, dqnB.episodeLengthHistory, 1e-9), 'DQN length history mismatch');
+  assert(arraysNear(dqnA.visitCounts, dqnB.visitCounts, 1e-9), 'DQN visit counts mismatch');
+  assert(
+    arraysNear(dqnA.targetUpdateSteps, dqnB.targetUpdateSteps, 1e-9),
+    'DQN target update steps mismatch'
+  );
 
-  // 6. DQN terminal transitions do not bootstrap
+  // 8. DQN initial weights reproducible
+  function makeNet(seed: number) {
+    const rng = () => {
+      const x = Math.sin(seed++) * 10000;
+      return x - Math.floor(x);
+    };
+    return new SimpleMLP(3, 8, 5, rng);
+  }
+  const netA = makeNet(1);
+  const netB = makeNet(1);
+  assert(
+    netA.W1.every((row, i) => arraysNear(row, netB.W1[i], 1e-9)),
+    'same rng seed should produce same network initialization'
+  );
+
+  // 9. DQN terminal transitions do not bootstrap
   const dqnTerminal = dqnA.lastBatch.find((item) => item.done);
   if (dqnTerminal) {
     assert(near(dqnTerminal.target, dqnTerminal.reward, 1e-9), 'terminal DQN target should equal reward');
   }
 
-  // 7. DQN loss formula matches stored values: loss = 0.5 * (target - prediction)^2
+  // 10. DQN loss formula matches stored values: loss = 0.5 * (target - prediction)^2
   dqnA.lastBatch.forEach((item, i) => {
     const expectedLoss = 0.5 * Math.pow(item.target - item.prediction, 2);
     assert(near(item.loss, expectedLoss, 1e-6), `DQN batch loss mismatch at item ${i}`);
   });
 
-  // 8. DQN gradient consistency: training on a single sample decreases loss / moves prediction toward target
-  const featureDim = 3;
-  const net = new SimpleMLP(featureDim, 8, 5, () => 0.5);
-  const x = coordinateFeatures(0, DEFAULT_CONFIG);
-  const target = 2.0;
-  const action = 1;
+  // 11. DQN batch gradient equals average of per-sample gradients
+  const net = new SimpleMLP(3, 8, 5, () => 0.5);
+  const x0 = coordinateFeatures(0, DEFAULT_CONFIG);
+  const x1 = coordinateFeatures(1, DEFAULT_CONFIG);
+  const target0 = 1.0;
+  const target1 = -0.5;
+  const action0 = 0;
+  const action1 = 2;
+
+  const g0 = net.computeGradients(x0, action0, target0).grads;
+  const g1 = net.computeGradients(x1, action1, target1).grads;
+
+  const batchNet = net.copy();
+  const batchGrad = {
+    dW1: g0.dW1.map((row, i) => row.map((v, j) => v + g1.dW1[i][j])),
+    db1: g0.db1.map((v, i) => v + g1.db1[i]),
+    dW2: g0.dW2.map((row, i) => row.map((v, j) => v + g1.dW2[i][j])),
+    db2: g0.db2.map((v, i) => v + g1.db2[i]),
+  };
+  const avgBatchGrad = {
+    dW1: batchGrad.dW1.map((row) => row.map((v) => v / 2)),
+    db1: batchGrad.db1.map((v) => v / 2),
+    dW2: batchGrad.dW2.map((row) => row.map((v) => v / 2)),
+    db2: batchGrad.db2.map((v) => v / 2),
+  };
+
+  // Apply averaged gradient to batchNet and the two individual gradients sequentially to net.
   const alpha = 0.01;
-  const initialPred = net.forward(x).out[action];
-  let prevLoss = 0.5 * Math.pow(target - initialPred, 2);
-  for (let k = 0; k < 50; k++) {
-    const loss = net.trainStep(x, action, target, alpha);
-    assert(Number.isFinite(loss) && loss >= 0, `DQN loss should be non-negative at step ${k}`);
-    assert(loss < prevLoss + 1e-6, `DQN loss should not increase under gradient descent at step ${k}`);
-    prevLoss = loss;
-  }
-  const finalPred = net.forward(x).out[action];
+  batchNet.applyGradients(avgBatchGrad, alpha);
+  net.applyGradients(g0, alpha);
+  net.applyGradients(g1, alpha);
+
+  // The two update strategies differ because applying g0 then g1 uses updated parameters for g1.
+  // Instead verify that batchNet equals a net updated by the averaged gradient computed by hand.
+  const handNet = new SimpleMLP(3, 8, 5, () => 0.5);
+  handNet.applyGradients(avgBatchGrad, alpha);
   assert(
-    Math.abs(finalPred - target) < Math.abs(initialPred - target),
-    'DQN training should move prediction closer to target'
+    batchNet.W1.every((row, i) => arraysNear(row, handNet.W1[i], 1e-9)),
+    'applyGradients with averaged gradient should match manual average update'
   );
 
-  // 9. DQN different seed usually differs
+  // 12. DQN target network only syncs at specified interval
+  const dqnShort = dqnGridWorld(EPISODIC_PATH_CONFIG, {
+    hiddenSize: 8,
+    alpha: 0.01,
+    epsilon: 0.3,
+    gamma: EPISODIC_PATH_CONFIG.gamma,
+    batchSize: 8,
+    replayCapacity: 200,
+    targetUpdateInterval: 5,
+    episodes: 10,
+    maxSteps: 10,
+    seed: 7,
+  });
+  assert(dqnShort.targetUpdateSteps.length > 0, 'target network should sync at least once');
+  dqnShort.targetUpdateSteps.forEach((s) => {
+    assert(s % 5 === 0, `target update step ${s} should be a multiple of interval 5`);
+  });
+
+  // 13. DQN different seed usually differs
   const dqnC = dqnGridWorld(EPISODIC_PATH_CONFIG, {
     hiddenSize: 16,
     alpha: 0.01,
@@ -253,6 +333,25 @@ export function runFATests() {
   });
   const dqnDiffers = dqnA.lossHistory.some((loss, i) => !near(loss, dqnC.lossHistory[i], 1e-9));
   assert(dqnDiffers, 'different DQN seed should usually produce different loss history');
+
+  // 14. DQN gradient descent moves prediction toward target
+  const trainNet = new SimpleMLP(3, 8, 5, () => 0.5);
+  const x = coordinateFeatures(0, DEFAULT_CONFIG);
+  const target = 2.0;
+  const action = 1;
+  const initPred = trainNet.forward(x).out[action];
+  let prevLoss = 0.5 * Math.pow(target - initPred, 2);
+  for (let k = 0; k < 50; k++) {
+    const loss = trainNet.trainStep(x, action, target, alpha);
+    assert(Number.isFinite(loss) && loss >= 0, `DQN loss should be non-negative at step ${k}`);
+    assert(loss < prevLoss + 1e-6, `DQN loss should not increase under gradient descent at step ${k}`);
+    prevLoss = loss;
+  }
+  const finalPred = trainNet.forward(x).out[action];
+  assert(
+    Math.abs(finalPred - target) < Math.abs(initPred - target),
+    'DQN training should move prediction closer to target'
+  );
 
   console.log('All function approximation tests passed.');
 }

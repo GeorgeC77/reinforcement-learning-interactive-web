@@ -43,7 +43,7 @@ export default function Chapter08OverviewPage() {
           <ConceptCard
             icon={<ArrowRight className="w-5 h-5" />}
             title="特征工程"
-            description="多项式、傅里叶、径向基等特征对近似能力的影响。"
+            description="多项式、坐标、距离/领域知识等特征对近似能力的影响。"
           />
           <ConceptCard
             icon={<ArrowRight className="w-5 h-5" />}

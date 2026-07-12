@@ -1,7 +1,7 @@
 /**
  * Function approximation utilities for reinforcement learning demos.
  *
- * Includes linear feature construction, semi-gradient TD(lambda), and a tiny
+ * Includes linear feature construction, semi-gradient TD(lambda), LSTD, and a tiny
  * hand-written MLP for a DQN-style tabular/continuous-state demo.
  */
 
@@ -19,6 +19,7 @@ import {
   policyBellmanResidualQ,
   optimalBellmanResidualQ,
   epsilonGreedyPolicy,
+  greedyPolicy,
 } from './gridworld';
 
 // ---------------------------------------------------------------------------
@@ -59,6 +60,19 @@ export function polynomialCoordinateFeatures(
 
 export type FeatureMode = 'onehot' | 'coordinate' | 'polynomial' | 'distance';
 
+export function distanceStateFeatures(state: number, config: GridWorldConfig): number[] {
+  const row = Math.floor(state / config.cols);
+  const col = state % config.cols;
+  const rNorm = config.rows > 1 ? (row / (config.rows - 1)) * 2 - 1 : 0;
+  const cNorm = config.cols > 1 ? (col / (config.cols - 1)) * 2 - 1 : 0;
+  const tRow = Math.floor(config.targetState / config.cols);
+  const tCol = config.targetState % config.cols;
+  const distanceToTarget = Math.sqrt((row - tRow) ** 2 + (col - tCol) ** 2);
+  const maxDist = Math.sqrt((config.rows - 1) ** 2 + (config.cols - 1) ** 2);
+  const isForbidden = config.forbiddenStates.includes(state) ? 1 : 0;
+  return [1, rNorm, cNorm, distanceToTarget / Math.max(1, maxDist), isForbidden];
+}
+
 function makeFeatureFn(mode: FeatureMode, degree?: number) {
   return (state: number, config: GridWorldConfig) => {
     if (mode === 'onehot') return oneHotFeatures(state, config);
@@ -70,6 +84,37 @@ function makeFeatureFn(mode: FeatureMode, degree?: number) {
 
 function dot(a: number[], b: number[]): number {
   return a.reduce((sum, x, i) => sum + x * (b[i] ?? 0), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Stationary distribution under a policy
+// ---------------------------------------------------------------------------
+
+export function stationaryDistribution(
+  policy: Policy,
+  config: GridWorldConfig,
+  maxIter = 2000
+): number[] {
+  const numStates = config.rows * config.cols;
+  let d = new Array(numStates).fill(1 / numStates);
+
+  for (let it = 0; it < maxIter; it++) {
+    const next = new Array(numStates).fill(0);
+    for (let s = 0; s < numStates; s++) {
+      for (let a = 0; a < 5; a++) {
+        const result = step(s, a as Action, config);
+        next[result.nextState] += d[s] * policy[s][a];
+      }
+    }
+    const sum = next.reduce((acc, v) => acc + v, 0);
+    if (sum === 0) break;
+    const norm = next.map((v) => v / sum);
+    const maxDiff = Math.max(...norm.map((v, i) => Math.abs(v - d[i])));
+    d = norm;
+    if (maxDiff < 1e-12) break;
+  }
+
+  return d;
 }
 
 // ---------------------------------------------------------------------------
@@ -102,11 +147,10 @@ export function semiGradientTD(
   const phi = makeFeatureFn(featureMode, polynomialDegree);
   const numStates = config.rows * config.cols;
 
-  // Compute true state values under the policy for reference
   const trueValues = solveStateValues(policy, config);
-
   const featureDim = phi(0, config).length;
   let w = new Array(featureDim).fill(0);
+
   const valuesHistory: StateValues[] = [];
   const weightsHistory: number[][] = [];
   const visitCounts = new Array(numStates).fill(0);
@@ -128,7 +172,6 @@ export function semiGradientTD(
       const vNext = result.done ? 0 : dot(phiNext, w);
       const delta = result.reward + config.gamma * vNext - vHat;
 
-      // Accumulating eligibility traces
       for (let i = 0; i < featureDim; i++) {
         z[i] = config.gamma * lambda * z[i] + phiS[i];
       }
@@ -154,25 +197,11 @@ export function semiGradientTD(
 // Tiny MLP for DQN demo
 // ---------------------------------------------------------------------------
 
-export interface DQNOptions {
-  hiddenSize: number;
-  alpha: number;
-  epsilon: number;
-  gamma?: number;
-  batchSize: number;
-  replayCapacity: number;
-  targetUpdateInterval: number;
-  episodes: number;
-  maxSteps: number;
-  seed?: number;
-}
-
-interface Transition {
-  state: number;
-  action: Action;
-  reward: number;
-  nextState: number;
-  done: boolean;
+export interface MLPGradients {
+  dW1: number[][];
+  db1: number[];
+  dW2: number[][];
+  db2: number[];
 }
 
 export class SimpleMLP {
@@ -201,7 +230,7 @@ export class SimpleMLP {
       for (let i = 0; i < this.inputSize; i++) {
         sum += x[i] * this.W1[i][j];
       }
-      hidden[j] = Math.max(0, sum); // ReLU
+      hidden[j] = Math.max(0, sum);
     }
 
     const out = new Array(this.outputSize).fill(0);
@@ -215,16 +244,14 @@ export class SimpleMLP {
     return { out, hidden };
   }
 
-  trainStep(x: number[], action: number, target: number, alpha: number): number {
+  computeGradients(x: number[], action: number, target: number): { loss: number; grads: MLPGradients } {
     const { out, hidden } = this.forward(x);
     const error = target - out[action];
     const loss = 0.5 * error * error;
 
-    // Gradient of 0.5 * error^2 w.r.t. out[action] is -(target - out[action]) = -error
     const dOut = new Array(this.outputSize).fill(0);
     dOut[action] = -error;
 
-    // Gradients w.r.t. W2, b2
     const dW2: number[][] = Array.from({ length: this.hiddenSize }, () => new Array(this.outputSize).fill(0));
     const db2 = [...dOut];
     for (let j = 0; j < this.hiddenSize; j++) {
@@ -233,14 +260,12 @@ export class SimpleMLP {
       }
     }
 
-    // Backprop into hidden layer
     const dHidden = new Array(this.hiddenSize).fill(0);
     for (let j = 0; j < this.hiddenSize; j++) {
       let sum = 0;
       for (let k = 0; k < this.outputSize; k++) {
         sum += dOut[k] * this.W2[j][k];
       }
-      // ReLU derivative
       dHidden[j] = hidden[j] > 0 ? sum : 0;
     }
 
@@ -252,25 +277,32 @@ export class SimpleMLP {
       }
     }
 
-    // Apply gradients
+    return { loss, grads: { dW1, db1, dW2, db2 } };
+  }
+
+  applyGradients(grads: MLPGradients, alpha: number): void {
     for (let j = 0; j < this.hiddenSize; j++) {
-      this.b1[j] -= alpha * db1[j];
+      this.b1[j] -= alpha * grads.db1[j];
       for (let i = 0; i < this.inputSize; i++) {
-        this.W1[i][j] -= alpha * dW1[i][j];
+        this.W1[i][j] -= alpha * grads.dW1[i][j];
       }
     }
     for (let k = 0; k < this.outputSize; k++) {
-      this.b2[k] -= alpha * db2[k];
+      this.b2[k] -= alpha * grads.db2[k];
       for (let j = 0; j < this.hiddenSize; j++) {
-        this.W2[j][k] -= alpha * dW2[j][k];
+        this.W2[j][k] -= alpha * grads.dW2[j][k];
       }
     }
+  }
 
+  trainStep(x: number[], action: number, target: number, alpha: number): number {
+    const { loss, grads } = this.computeGradients(x, action, target);
+    this.applyGradients(grads, alpha);
     return loss;
   }
 
   copy(): SimpleMLP {
-    const net = new SimpleMLP(this.inputSize, this.hiddenSize, this.outputSize);
+    const net = new SimpleMLP(this.inputSize, this.hiddenSize, this.outputSize, () => 0);
     net.W1 = this.W1.map((row) => [...row]);
     net.b1 = [...this.b1];
     net.W2 = this.W2.map((row) => [...row]);
@@ -292,7 +324,10 @@ function randomMatrix(
   scale: number,
   rng?: () => number
 ): number[][] {
-  const rand = rng ?? Math.random;
+  const rand = rng;
+  if (!rand) {
+    throw new Error('randomMatrix requires an rng function; Math.random is not allowed');
+  }
   return Array.from({ length: rows }, () =>
     Array.from({ length: cols }, () => (rand() * 2 - 1) * scale)
   );
@@ -301,6 +336,42 @@ function randomMatrix(
 // ---------------------------------------------------------------------------
 // DQN on the GridWorld using coordinate features
 // ---------------------------------------------------------------------------
+
+export type EpsilonScheduleMode = 'fixed' | 'decay-floor' | 'glie';
+
+function epsilonForEpisode(
+  episode: number,
+  epsilon0: number,
+  mode: EpsilonScheduleMode,
+  epsilonMin = 0.01
+): number {
+  if (mode === 'fixed') return epsilon0;
+  if (mode === 'glie') return epsilon0 / Math.sqrt(episode + 1);
+  return Math.max(epsilonMin, epsilon0 * Math.pow(0.99, episode));
+}
+
+export interface DQNOptions {
+  hiddenSize: number;
+  alpha: number;
+  epsilon: number;
+  epsilonMode?: EpsilonScheduleMode;
+  epsilonMin?: number;
+  gamma?: number;
+  batchSize: number;
+  replayCapacity: number;
+  targetUpdateInterval: number;
+  episodes: number;
+  maxSteps: number;
+  seed?: number;
+}
+
+interface Transition {
+  state: number;
+  action: Action;
+  reward: number;
+  nextState: number;
+  done: boolean;
+}
 
 export interface DQNBatchItem {
   state: number;
@@ -313,19 +384,24 @@ export interface DQNBatchItem {
   loss: number;
 }
 
-export function dqnGridWorld(
-  config: GridWorldConfig,
-  options: DQNOptions
-): {
+export interface DQNResult {
   qHistory: number[][][];
   lossHistory: number[];
   finalReplaySize: number;
   lastBatch: DQNBatchItem[];
-} {
+  episodeReturnHistory: number[];
+  episodeLengthHistory: number[];
+  visitCounts: number[];
+  targetUpdateSteps: number[];
+}
+
+export function dqnGridWorld(config: GridWorldConfig, options: DQNOptions): DQNResult {
   const {
     hiddenSize,
     alpha,
     epsilon,
+    epsilonMode = 'fixed',
+    epsilonMin = 0.01,
     gamma = config.gamma,
     batchSize,
     replayCapacity,
@@ -346,6 +422,10 @@ export function dqnGridWorld(
 
   const qHistory: number[][][] = [];
   const lossHistory: number[] = [];
+  const episodeReturnHistory: number[] = [];
+  const episodeLengthHistory: number[] = [];
+  const visitCounts = new Array(numStates).fill(0);
+  const targetUpdateSteps: number[] = [];
   let lastBatch: DQNBatchItem[] = [];
   let trainStepCount = 0;
 
@@ -357,57 +437,100 @@ export function dqnGridWorld(
     return net.forward(stateFeatures(state)).out;
   }
 
+  function selectAction(state: number, eps: number): Action {
+    const qValues = networkQ(mainNet, state);
+    if (rng() < eps) {
+      return Math.floor(rng() * numActions) as Action;
+    }
+    const maxQ = Math.max(...qValues);
+    const best = qValues
+      .map((q, i) => ({ q, i }))
+      .filter(({ q }) => Math.abs(q - maxQ) < 1e-6)
+      .map(({ i }) => i);
+    return best[Math.floor(rng() * best.length)] as Action;
+  }
+
+  function zeroGradients(): MLPGradients {
+    return {
+      dW1: Array.from({ length: featureDim }, () => new Array(hiddenSize).fill(0)),
+      db1: new Array(hiddenSize).fill(0),
+      dW2: Array.from({ length: hiddenSize }, () => new Array(numActions).fill(0)),
+      db2: new Array(numActions).fill(0),
+    };
+  }
+
+  function addGradients(a: MLPGradients, b: MLPGradients): MLPGradients {
+    return {
+      dW1: a.dW1.map((row, i) => row.map((v, j) => v + b.dW1[i][j])),
+      db1: a.db1.map((v, i) => v + b.db1[i]),
+      dW2: a.dW2.map((row, i) => row.map((v, j) => v + b.dW2[i][j])),
+      db2: a.db2.map((v, i) => v + b.db2[i]),
+    };
+  }
+
+  function scaleGradients(g: MLPGradients, s: number): MLPGradients {
+    return {
+      dW1: g.dW1.map((row) => row.map((v) => v * s)),
+      db1: g.db1.map((v) => v * s),
+      dW2: g.dW2.map((row) => row.map((v) => v * s)),
+      db2: g.db2.map((v) => v * s),
+    };
+  }
+
   for (let ep = 0; ep < episodes; ep++) {
+    const eps = epsilonForEpisode(ep, epsilon, epsilonMode, epsilonMin);
     let state = config.startState;
+    let episodeReturn = 0;
+    let episodeLength = 0;
 
     for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
       if (isTerminal(state, config)) break;
+      visitCounts[state]++;
+      episodeLength++;
 
-      // ε-greedy action selection from main network
-      let action: Action;
-      const qValues = networkQ(mainNet, state);
-      if (rng() < epsilon) {
-        action = Math.floor(rng() * numActions) as Action;
-      } else {
-        const maxQ = Math.max(...qValues);
-        const best = qValues
-          .map((q, i) => ({ q, i }))
-          .filter(({ q }) => Math.abs(q - maxQ) < 1e-6)
-          .map(({ i }) => i);
-        action = best[0] as Action;
-      }
-
+      const action = selectAction(state, eps);
       const result = step(state, action, config);
+      episodeReturn += result.reward;
+
       replay.push({ state, action, reward: result.reward, nextState: result.nextState, done: result.done });
       if (replay.length > replayCapacity) replay.shift();
 
-      // Replay training
       if (replay.length >= batchSize) {
         const batch = sampleReplay(replay, batchSize, rng);
         let totalLoss = 0;
         const batchDetails: DQNBatchItem[] = [];
+        let gradSum = zeroGradients();
+
         for (const trans of batch) {
           const qNext = networkQ(targetNet, trans.nextState);
           const maxQNext = Math.max(...qNext);
           const target = trans.done ? trans.reward : trans.reward + gamma * maxQNext;
           const prediction = networkQ(mainNet, trans.state)[trans.action];
-          const loss = mainNet.trainStep(stateFeatures(trans.state), trans.action, target, alpha);
-          batchDetails.push({ ...trans, target, prediction, loss });
+          const { loss, grads } = mainNet.computeGradients(stateFeatures(trans.state), trans.action, target);
+          gradSum = addGradients(gradSum, grads);
           totalLoss += loss;
+          batchDetails.push({ ...trans, target, prediction, loss });
         }
+
+        const avgGrad = scaleGradients(gradSum, 1 / batch.length);
+        mainNet.applyGradients(avgGrad, alpha);
+
         lastBatch = batchDetails;
         lossHistory.push(totalLoss / batch.length);
         trainStepCount++;
 
-        if (trainStepCount % targetUpdateInterval === 0) {
-          // Copy main network weights to target network
+        if (targetUpdateInterval > 0 && trainStepCount % targetUpdateInterval === 0) {
           targetNet.initFrom(mainNet);
+          targetUpdateSteps.push(trainStepCount);
         }
       }
 
       state = result.nextState;
       if (result.done) break;
     }
+
+    episodeReturnHistory.push(episodeReturn);
+    episodeLengthHistory.push(episodeLength);
 
     const qTable: number[][] = [];
     for (let s = 0; s < numStates; s++) {
@@ -416,7 +539,16 @@ export function dqnGridWorld(
     qHistory.push(qTable);
   }
 
-  return { qHistory, lossHistory, finalReplaySize: replay.length, lastBatch };
+  return {
+    qHistory,
+    lossHistory,
+    finalReplaySize: replay.length,
+    lastBatch,
+    episodeReturnHistory,
+    episodeLengthHistory,
+    visitCounts,
+    targetUpdateSteps,
+  };
 }
 
 function sampleReplay<T>(buffer: T[], n: number, rng: () => number): T[] {
@@ -436,24 +568,7 @@ function sampleReplay<T>(buffer: T[], n: number, rng: () => number): T[] {
 
 export type ActionValueFeatureMode = 'onehot' | 'shared';
 
-export function distanceStateFeatures(state: number, config: GridWorldConfig): number[] {
-  const { row, col } = { row: Math.floor(state / config.cols), col: state % config.cols };
-  const rNorm = config.rows > 1 ? (row / (config.rows - 1)) * 2 - 1 : 0;
-  const cNorm = config.cols > 1 ? (col / (config.cols - 1)) * 2 - 1 : 0;
-  const { row: tRow, col: tCol } = {
-    row: Math.floor(config.targetState / config.cols),
-    col: config.targetState % config.cols,
-  };
-  const distanceToTarget = Math.sqrt((row - tRow) ** 2 + (col - tCol) ** 2);
-  const maxDist = Math.sqrt((config.rows - 1) ** 2 + (config.cols - 1) ** 2);
-  const isForbidden = config.forbiddenStates.includes(state) ? 1 : 0;
-  return [1, rNorm, cNorm, distanceToTarget / Math.max(1, maxDist), isForbidden];
-}
-
-export function actionValueFeatureDim(
-  config: GridWorldConfig,
-  mode: ActionValueFeatureMode
-): number {
+export function actionValueFeatureDim(config: GridWorldConfig, mode: ActionValueFeatureMode): number {
   if (mode === 'onehot') return config.rows * config.cols * 5;
   const stateDim = distanceStateFeatures(0, config).length;
   const actionDim = 5;
@@ -488,6 +603,8 @@ export function actionValueFeatures(
 export interface ActionValueFAOptions {
   alpha: number;
   epsilon: number;
+  epsilonMode?: EpsilonScheduleMode;
+  epsilonMin?: number;
   gamma?: number;
   episodes: number;
   maxSteps: number;
@@ -508,17 +625,34 @@ export interface LastFAUpdate {
   weightChange: number;
 }
 
-export function actionValueFA(
-  config: GridWorldConfig,
-  options: ActionValueFAOptions
-): {
+export interface ActionValueFAResult {
   qHistory: number[][][];
   weightsHistory: number[][];
   lastUpdate: LastFAUpdate | null;
   residualHistory: number[];
   behaviorPolicyHistory: Policy[];
-} {
-  const { alpha, epsilon, gamma = config.gamma, episodes, maxSteps, featureMode, algorithm, seed = 1 } = options;
+  greedyPolicyHistory: Policy[];
+  episodeReturnHistory: number[];
+  episodeLengthHistory: number[];
+  visitCounts: number[];
+}
+
+export function actionValueFA(
+  config: GridWorldConfig,
+  options: ActionValueFAOptions
+): ActionValueFAResult {
+  const {
+    alpha,
+    epsilon,
+    epsilonMode = 'fixed',
+    epsilonMin = 0.01,
+    gamma = config.gamma,
+    episodes,
+    maxSteps,
+    featureMode,
+    algorithm,
+    seed = 1,
+  } = options;
   const rng = mulberry32(seed);
   const numStates = config.rows * config.cols;
   const numActions = 5;
@@ -529,6 +663,10 @@ export function actionValueFA(
   const weightsHistory: number[][] = [];
   const residualHistory: number[] = [];
   const behaviorPolicyHistory: Policy[] = [];
+  const greedyPolicyHistory: Policy[] = [];
+  const episodeReturnHistory: number[] = [];
+  const episodeLengthHistory: number[] = [];
+  const visitCounts = new Array(numStates).fill(0);
   let lastUpdate: LastFAUpdate | null = null;
 
   function qValue(state: number, action: Action): number {
@@ -545,20 +683,26 @@ export function actionValueFA(
     return best[Math.floor(rng() * best.length)] as Action;
   }
 
-  function sampleEpsilonGreedy(state: number): Action {
-    if (rng() < epsilon) {
+  function sampleEpsilonGreedy(state: number, eps: number): Action {
+    if (rng() < eps) {
       return Math.floor(rng() * numActions) as Action;
     }
     return greedyAction(state);
   }
 
   for (let ep = 0; ep < episodes; ep++) {
+    const eps = epsilonForEpisode(ep, epsilon, epsilonMode, epsilonMin);
     let state = config.startState;
-    let action = sampleEpsilonGreedy(state);
+    let action = sampleEpsilonGreedy(state, eps);
+    let episodeReturn = 0;
+    let episodeLength = 0;
 
     for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
       if (isTerminal(state, config)) break;
+      visitCounts[state]++;
+      episodeLength++;
       const result = step(state, action, config);
+      episodeReturn += result.reward;
       const phi = actionValueFeatures(state, action, config, featureMode);
       const prediction = dot(phi, w);
 
@@ -566,7 +710,7 @@ export function actionValueFA(
       let nextAction: Action | undefined;
       if (!result.done) {
         if (algorithm === 'sarsa') {
-          nextAction = sampleEpsilonGreedy(result.nextState);
+          nextAction = sampleEpsilonGreedy(result.nextState, eps);
           target += gamma * qValue(result.nextState, nextAction);
         } else {
           const maxQ = Math.max(
@@ -577,14 +721,11 @@ export function actionValueFA(
       }
 
       const tdError = target - prediction;
-      const update = alpha * tdError;
       const weightBefore = w.map((x) => x);
       for (let i = 0; i < featureDim; i++) {
-        w[i] += update * phi[i];
+        w[i] += alpha * tdError * phi[i];
       }
-      const weightChange = Math.sqrt(
-        w.reduce((sum, wi, i) => sum + (wi - weightBefore[i]) ** 2, 0)
-      );
+      const weightChange = Math.sqrt(w.reduce((sum, wi, i) => sum + (wi - weightBefore[i]) ** 2, 0));
 
       lastUpdate = {
         state,
@@ -599,9 +740,12 @@ export function actionValueFA(
       };
 
       state = result.nextState;
-      action = algorithm === 'sarsa' && nextAction !== undefined ? nextAction : sampleEpsilonGreedy(state);
+      action = algorithm === 'sarsa' && nextAction !== undefined ? nextAction : sampleEpsilonGreedy(state, eps);
       if (result.done) break;
     }
+
+    episodeReturnHistory.push(episodeReturn);
+    episodeLengthHistory.push(episodeLength);
 
     const qTable: number[][] = [];
     for (let s = 0; s < numStates; s++) {
@@ -613,8 +757,12 @@ export function actionValueFA(
     }
     qHistory.push(qTable);
     weightsHistory.push([...w]);
-    const behaviorPolicy = epsilonGreedyPolicy(qTable, epsilon);
+
+    const behaviorPolicy = epsilonGreedyPolicy(qTable, eps, rng);
+    const greedyPol = greedyPolicy(qTable);
     behaviorPolicyHistory.push(behaviorPolicy);
+    greedyPolicyHistory.push(greedyPol);
+
     residualHistory.push(
       algorithm === 'qlearning'
         ? optimalBellmanResidualQ(qTable, config)
@@ -622,5 +770,111 @@ export function actionValueFA(
     );
   }
 
-  return { qHistory, weightsHistory, lastUpdate, residualHistory, behaviorPolicyHistory };
+  return {
+    qHistory,
+    weightsHistory,
+    lastUpdate,
+    residualHistory,
+    behaviorPolicyHistory,
+    greedyPolicyHistory,
+    episodeReturnHistory,
+    episodeLengthHistory,
+    visitCounts,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// LSTD and small matrix helpers
+// ---------------------------------------------------------------------------
+
+function matZero(rows: number, cols: number): number[][] {
+  return Array.from({ length: rows }, () => new Array(cols).fill(0));
+}
+
+function matAdd(a: number[][], b: number[][]): number[][] {
+  return a.map((row, i) => row.map((v, j) => v + b[i][j]));
+}
+
+function outer(a: number[], b: number[]): number[][] {
+  return a.map((x) => b.map((y) => x * y));
+}
+
+function matVec(a: number[][], v: number[]): number[] {
+  return a.map((row) => row.reduce((sum, x, i) => sum + x * v[i], 0));
+}
+
+function invertMatrix(a: number[][]): number[][] | null {
+  const n = a.length;
+  if (n === 0) return null;
+  // augment [a | I]
+  const aug = a.map((row, i) => [...row, ...Array.from({ length: n }, (_, j) => (j === i ? 1 : 0))]);
+
+  for (let i = 0; i < n; i++) {
+    let pivot = aug[i][i];
+    let pivotRow = i;
+    for (let r = i + 1; r < n; r++) {
+      if (Math.abs(aug[r][i]) > Math.abs(pivot)) {
+        pivot = aug[r][i];
+        pivotRow = r;
+      }
+    }
+    if (Math.abs(pivot) < 1e-12) return null;
+    if (pivotRow !== i) {
+      [aug[i], aug[pivotRow]] = [aug[pivotRow], aug[i]];
+    }
+    for (let j = 0; j < 2 * n; j++) {
+      aug[i][j] /= pivot;
+    }
+    for (let r = 0; r < n; r++) {
+      if (r === i) continue;
+      const factor = aug[r][i];
+      for (let j = 0; j < 2 * n; j++) {
+        aug[r][j] -= factor * aug[i][j];
+      }
+    }
+  }
+
+  return aug.map((row) => row.slice(n));
+}
+
+export interface LSTDResult {
+  A: number[][];
+  b: number[];
+  w: number[];
+  featureDim: number;
+}
+
+export function lstdFromTrajectory(
+  policy: Policy,
+  config: GridWorldConfig,
+  options: { featureMode: FeatureMode; polynomialDegree?: number; episodes?: number; maxSteps?: number; seed?: number }
+): LSTDResult {
+  const { featureMode, polynomialDegree, episodes = 200, maxSteps = 50, seed = 1 } = options;
+  const rng = mulberry32(seed);
+  const phi = makeFeatureFn(featureMode, polynomialDegree);
+  const featureDim = phi(0, config).length;
+  const gamma = config.gamma;
+
+  let A = matZero(featureDim, featureDim);
+  let bVec = new Array(featureDim).fill(0);
+
+  for (let ep = 0; ep < episodes; ep++) {
+    let state = config.startState;
+    for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
+      if (isTerminal(state, config)) break;
+      const action = sampleActionWithRng(policy[state], rng);
+      const result = step(state, action, config);
+      const phiS = phi(state, config);
+      const phiNext = result.done ? new Array(featureDim).fill(0) : phi(result.nextState, config);
+      const diff = phiS.map((v, i) => v - gamma * phiNext[i]);
+      A = matAdd(A, outer(phiS, diff));
+      bVec = bVec.map((v, i) => v + result.reward * phiS[i]);
+      state = result.nextState;
+      if (result.done) break;
+    }
+  }
+
+  const inv = invertMatrix(A);
+  const w = inv ? matVec(inv, bVec) : new Array(featureDim).fill(0);
+  return { A, b: bVec, w, featureDim };
 }
