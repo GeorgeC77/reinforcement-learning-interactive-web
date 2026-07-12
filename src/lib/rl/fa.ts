@@ -5,6 +5,7 @@
  * hand-written MLP for a DQN-style tabular/continuous-state demo.
  */
 
+import { mulberry32 } from './stochasticApproximation';
 import {
   type GridWorldConfig,
   type Policy,
@@ -12,8 +13,12 @@ import {
   type Action,
   step,
   isTerminal,
-  sampleAction,
+  sampleActionWithRng,
   solveStateValues,
+  policyBellmanResidualV,
+  policyBellmanResidualQ,
+  optimalBellmanResidualQ,
+  epsilonGreedyPolicy,
 } from './gridworld';
 
 // ---------------------------------------------------------------------------
@@ -78,6 +83,7 @@ export interface SemiGradientTDOptions {
   polynomialDegree?: number;
   episodes: number;
   maxSteps: number;
+  seed?: number;
 }
 
 export function semiGradientTD(
@@ -88,8 +94,11 @@ export function semiGradientTD(
   valuesHistory: StateValues[];
   weightsHistory: number[][];
   trueValues: StateValues;
+  visitCounts: number[];
+  residualHistory: number[];
 } {
-  const { alpha, lambda, featureMode, polynomialDegree, episodes, maxSteps } = options;
+  const { alpha, lambda, featureMode, polynomialDegree, episodes, maxSteps, seed = 1 } = options;
+  const rng = mulberry32(seed);
   const phi = makeFeatureFn(featureMode, polynomialDegree);
   const numStates = config.rows * config.cols;
 
@@ -100,6 +109,8 @@ export function semiGradientTD(
   let w = new Array(featureDim).fill(0);
   const valuesHistory: StateValues[] = [];
   const weightsHistory: number[][] = [];
+  const visitCounts = new Array(numStates).fill(0);
+  const residualHistory: number[] = [];
 
   for (let ep = 0; ep < episodes; ep++) {
     let state = config.startState;
@@ -107,7 +118,8 @@ export function semiGradientTD(
 
     for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
       if (isTerminal(state, config)) break;
-      const action = sampleAction(policy[state]);
+      visitCounts[state]++;
+      const action = sampleActionWithRng(policy[state], rng);
       const result = step(state, action, config);
 
       const phiS = phi(state, config);
@@ -132,9 +144,10 @@ export function semiGradientTD(
     const predicted = Array.from({ length: numStates }, (_, s) => dot(phi(s, config), w));
     valuesHistory.push(predicted);
     weightsHistory.push([...w]);
+    residualHistory.push(policyBellmanResidualV(predicted, policy, config));
   }
 
-  return { valuesHistory, weightsHistory, trueValues };
+  return { valuesHistory, weightsHistory, trueValues, visitCounts, residualHistory };
 }
 
 // ---------------------------------------------------------------------------
@@ -151,6 +164,7 @@ export interface DQNOptions {
   targetUpdateInterval: number;
   episodes: number;
   maxSteps: number;
+  seed?: number;
 }
 
 interface Transition {
@@ -161,7 +175,7 @@ interface Transition {
   done: boolean;
 }
 
-class SimpleMLP {
+export class SimpleMLP {
   inputSize: number;
   hiddenSize: number;
   outputSize: number;
@@ -170,13 +184,13 @@ class SimpleMLP {
   W2: number[][];
   b2: number[];
 
-  constructor(inputSize: number, hiddenSize: number, outputSize: number) {
+  constructor(inputSize: number, hiddenSize: number, outputSize: number, rng?: () => number) {
     this.inputSize = inputSize;
     this.hiddenSize = hiddenSize;
     this.outputSize = outputSize;
-    this.W1 = randomMatrix(inputSize, hiddenSize, 0.1);
+    this.W1 = randomMatrix(inputSize, hiddenSize, 0.1, rng);
     this.b1 = new Array(hiddenSize).fill(0);
-    this.W2 = randomMatrix(hiddenSize, outputSize, 0.1);
+    this.W2 = randomMatrix(hiddenSize, outputSize, 0.1, rng);
     this.b2 = new Array(outputSize).fill(0);
   }
 
@@ -204,9 +218,9 @@ class SimpleMLP {
   trainStep(x: number[], action: number, target: number, alpha: number): number {
     const { out, hidden } = this.forward(x);
     const error = target - out[action];
-    const loss = error * error;
+    const loss = 0.5 * error * error;
 
-    // Output layer gradients for the chosen action only
+    // Gradient of 0.5 * error^2 w.r.t. out[action] is -(target - out[action]) = -error
     const dOut = new Array(this.outputSize).fill(0);
     dOut[action] = -error;
 
@@ -263,11 +277,24 @@ class SimpleMLP {
     net.b2 = [...this.b2];
     return net;
   }
+
+  initFrom(other: SimpleMLP) {
+    this.W1 = other.W1.map((row) => [...row]);
+    this.b1 = [...other.b1];
+    this.W2 = other.W2.map((row) => [...row]);
+    this.b2 = [...other.b2];
+  }
 }
 
-function randomMatrix(rows: number, cols: number, scale: number): number[][] {
+function randomMatrix(
+  rows: number,
+  cols: number,
+  scale: number,
+  rng?: () => number
+): number[][] {
+  const rand = rng ?? Math.random;
   return Array.from({ length: rows }, () =>
-    Array.from({ length: cols }, () => (Math.random() * 2 - 1) * scale)
+    Array.from({ length: cols }, () => (rand() * 2 - 1) * scale)
   );
 }
 
@@ -305,13 +332,15 @@ export function dqnGridWorld(
     targetUpdateInterval,
     episodes,
     maxSteps,
+    seed = 1,
   } = options;
+  const rng = mulberry32(seed);
 
   const numStates = config.rows * config.cols;
   const numActions = 5;
   const featureDim = 3; // [1, rNorm, cNorm]
 
-  const mainNet = new SimpleMLP(featureDim, hiddenSize, numActions);
+  const mainNet = new SimpleMLP(featureDim, hiddenSize, numActions, rng);
   const targetNet = mainNet.copy();
   const replay: Transition[] = [];
 
@@ -337,15 +366,15 @@ export function dqnGridWorld(
       // ε-greedy action selection from main network
       let action: Action;
       const qValues = networkQ(mainNet, state);
-      if (Math.random() < epsilon) {
-        action = Math.floor(Math.random() * numActions) as Action;
+      if (rng() < epsilon) {
+        action = Math.floor(rng() * numActions) as Action;
       } else {
         const maxQ = Math.max(...qValues);
         const best = qValues
           .map((q, i) => ({ q, i }))
           .filter(({ q }) => Math.abs(q - maxQ) < 1e-6)
           .map(({ i }) => i);
-        action = best[Math.floor(Math.random() * best.length)] as Action;
+        action = best[0] as Action;
       }
 
       const result = step(state, action, config);
@@ -354,7 +383,7 @@ export function dqnGridWorld(
 
       // Replay training
       if (replay.length >= batchSize) {
-        const batch = sampleReplay(replay, batchSize);
+        const batch = sampleReplay(replay, batchSize, rng);
         let totalLoss = 0;
         const batchDetails: DQNBatchItem[] = [];
         for (const trans of batch) {
@@ -372,10 +401,7 @@ export function dqnGridWorld(
 
         if (trainStepCount % targetUpdateInterval === 0) {
           // Copy main network weights to target network
-          targetNet.W1 = mainNet.W1.map((row) => [...row]);
-          targetNet.b1 = [...mainNet.b1];
-          targetNet.W2 = mainNet.W2.map((row) => [...row]);
-          targetNet.b2 = [...mainNet.b2];
+          targetNet.initFrom(mainNet);
         }
       }
 
@@ -393,11 +419,11 @@ export function dqnGridWorld(
   return { qHistory, lossHistory, finalReplaySize: replay.length, lastBatch };
 }
 
-function sampleReplay<T>(buffer: T[], n: number): T[] {
+function sampleReplay<T>(buffer: T[], n: number, rng: () => number): T[] {
   const sample: T[] = [];
   const copy = [...buffer];
   for (let i = 0; i < n && copy.length > 0; i++) {
-    const idx = Math.floor(Math.random() * copy.length);
+    const idx = Math.floor(rng() * copy.length);
     sample.push(copy[idx]);
     copy.splice(idx, 1);
   }
@@ -410,7 +436,7 @@ function sampleReplay<T>(buffer: T[], n: number): T[] {
 
 export type ActionValueFeatureMode = 'onehot' | 'shared';
 
-function distanceStateFeatures(state: number, config: GridWorldConfig): number[] {
+export function distanceStateFeatures(state: number, config: GridWorldConfig): number[] {
   const { row, col } = { row: Math.floor(state / config.cols), col: state % config.cols };
   const rNorm = config.rows > 1 ? (row / (config.rows - 1)) * 2 - 1 : 0;
   const cNorm = config.cols > 1 ? (col / (config.cols - 1)) * 2 - 1 : 0;
@@ -467,6 +493,7 @@ export interface ActionValueFAOptions {
   maxSteps: number;
   featureMode: ActionValueFeatureMode;
   algorithm: 'sarsa' | 'qlearning';
+  seed?: number;
 }
 
 export interface LastFAUpdate {
@@ -488,8 +515,11 @@ export function actionValueFA(
   qHistory: number[][][];
   weightsHistory: number[][];
   lastUpdate: LastFAUpdate | null;
+  residualHistory: number[];
+  behaviorPolicyHistory: Policy[];
 } {
-  const { alpha, epsilon, gamma = config.gamma, episodes, maxSteps, featureMode, algorithm } = options;
+  const { alpha, epsilon, gamma = config.gamma, episodes, maxSteps, featureMode, algorithm, seed = 1 } = options;
+  const rng = mulberry32(seed);
   const numStates = config.rows * config.cols;
   const numActions = 5;
   const featureDim = actionValueFeatureDim(config, featureMode);
@@ -497,6 +527,8 @@ export function actionValueFA(
 
   const qHistory: number[][][] = [];
   const weightsHistory: number[][] = [];
+  const residualHistory: number[] = [];
+  const behaviorPolicyHistory: Policy[] = [];
   let lastUpdate: LastFAUpdate | null = null;
 
   function qValue(state: number, action: Action): number {
@@ -510,12 +542,12 @@ export function actionValueFA(
       .map((q, i) => ({ q, i }))
       .filter(({ q }) => Math.abs(q - maxQ) < 1e-6)
       .map(({ i }) => i);
-    return best[Math.floor(Math.random() * best.length)] as Action;
+    return best[Math.floor(rng() * best.length)] as Action;
   }
 
   function sampleEpsilonGreedy(state: number): Action {
-    if (Math.random() < epsilon) {
-      return Math.floor(Math.random() * numActions) as Action;
+    if (rng() < epsilon) {
+      return Math.floor(rng() * numActions) as Action;
     }
     return greedyAction(state);
   }
@@ -581,7 +613,14 @@ export function actionValueFA(
     }
     qHistory.push(qTable);
     weightsHistory.push([...w]);
+    const behaviorPolicy = epsilonGreedyPolicy(qTable, epsilon);
+    behaviorPolicyHistory.push(behaviorPolicy);
+    residualHistory.push(
+      algorithm === 'qlearning'
+        ? optimalBellmanResidualQ(qTable, config)
+        : policyBellmanResidualQ(qTable, behaviorPolicy, config)
+    );
   }
 
-  return { qHistory, weightsHistory, lastUpdate };
+  return { qHistory, weightsHistory, lastUpdate, residualHistory, behaviorPolicyHistory };
 }

@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { Brain, ShieldAlert } from 'lucide-react';
+import { Brain, ShieldAlert, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -33,18 +33,59 @@ import {
   actionValueToStateValue,
   estimateTrueActionValues,
   qTableRMSE,
+  randomPolicy,
+  policyWeightedStateValues,
 } from '@/lib/rl/gridworld';
 import {
   semiGradientTD,
-  dqnGridWorld,
   actionValueFA,
+  dqnGridWorld,
+  oneHotFeatures,
+  coordinateFeatures,
+  polynomialCoordinateFeatures,
+  distanceStateFeatures,
   type FeatureMode,
   type ActionValueFeatureMode,
 } from '@/lib/rl/fa';
+import { mulberry32 } from '@/lib/rl/stochasticApproximation';
 
-type TabKey = 'polynomial' | 'semi-gradient' | 'action-value' | 'dqn';
+type TabKey =
+  | 'polynomial'
+  | 'semi-gradient'
+  | 'feature-design'
+  | 'theory'
+  | 'action-value'
+  | 'dqn';
+
+type PolicyPreset = 'goal' | 'random' | 'right';
 
 const RIGHT_POLICY: (0 | 1 | 2 | 3 | 4)[] = [1, 1, 1, 1, 1, 1, 1, 1, 1];
+const GOAL_POLICY: (0 | 1 | 2 | 3 | 4)[] = [1, 2, 2, 1, 2, 2, 1, 1, 4];
+
+function policyFromPreset(preset: PolicyPreset) {
+  if (preset === 'right') return deterministicPolicy(RIGHT_POLICY, 5);
+  if (preset === 'random') return randomPolicy(9, 5);
+  return deterministicPolicy(GOAL_POLICY, 5);
+}
+
+function featureVectorText(state: number, mode: FeatureMode, degree?: number): string {
+  if (mode === 'onehot') return `[${oneHotFeatures(state, DEFAULT_CONFIG).join(', ')}]`;
+  if (mode === 'coordinate') return `[${coordinateFeatures(state, DEFAULT_CONFIG).map((x) => x.toFixed(2)).join(', ')}]`;
+  if (mode === 'distance') return `[${distanceStateFeatures(state, DEFAULT_CONFIG).map((x) => x.toFixed(2)).join(', ')}]`;
+  return `[${polynomialCoordinateFeatures(state, DEFAULT_CONFIG, degree ?? 2).map((x) => x.toFixed(2)).join(', ')}]`;
+}
+
+function rmse(a: number[], b: number[]) {
+  return Math.sqrt(a.reduce((sum, v, i) => sum + (v - b[i]) ** 2, 0) / a.length);
+}
+
+function weightedRmse(a: number[], b: number[], weights: number[]) {
+  const total = weights.reduce((s, w) => s + w, 0);
+  if (total === 0) return 0;
+  return Math.sqrt(
+    a.reduce((sum, v, i) => sum + weights[i] * (v - b[i]) ** 2, 0) / total
+  );
+}
 
 export default function Chapter08FaPage() {
   const [activeTab, setActiveTab] = useState<TabKey>('polynomial');
@@ -57,11 +98,9 @@ export default function Chapter08FaPage() {
             <Brain className="w-8 h-8 text-blue-600" />
           </div>
         </div>
-        <h1 className="text-3xl md:text-4xl font-bold text-gray-900 mb-3">
-          第 8 章 值函数近似
-        </h1>
+        <h1 className="text-3xl md:text-4xl font-bold text-gray-900 mb-3">第 8 章 值函数近似</h1>
         <p className="text-gray-600 max-w-2xl mx-auto">
-          从线性函数近似到深度 Q 网络：用参数化函数逼近值函数，并通过经验回放与目标网络稳定学习。
+          从表格到函数：用参数化函数逼近大状态空间中的值函数，并分析半梯度 TD、动作值近似与 DQN 的核心机制。
         </p>
         <p className="mt-4 text-sm text-amber-700 flex items-center justify-center gap-2">
           <ShieldAlert className="w-4 h-4" />
@@ -76,7 +115,7 @@ export default function Chapter08FaPage() {
           description="用状态特征 φ(s) 的线性组合来近似状态值，参数 w 决定了近似形状。"
         />
         <FormulaCard
-          title="半梯度 TD 更新"
+          title="半梯度 TD(0) 更新"
           formula={
             <KaTeX
               math={String.raw`w \leftarrow w + \alpha \bigl[ r + \gamma \hat{v}(s', w) - \hat{v}(s, w) \bigr] \nabla_w \hat{v}(s, w)`}
@@ -86,23 +125,25 @@ export default function Chapter08FaPage() {
           description="只对目标中的样本梯度进行更新，因此称为半梯度（semi-gradient）方法。"
         />
         <FormulaCard
-          title="DQN 核心机制"
+          title="DQN 目标"
           formula={
             <KaTeX
-              math={String.raw`L(w) = \mathbb{E}_{(s,a,r,s') \sim \mathcal{D}} \bigl[ (r + \gamma \max_{a'} Q(s', a'; w^-) - Q(s,a; w))^2 \bigr]`}
+              math={String.raw`y = r + \gamma \max_{a'} Q(s', a'; w^-), \quad L = \tfrac12 \bigl(y - Q(s,a;w)\bigr)^2`}
               display
             />
           }
-          description="经验回放 D 打破样本相关性，目标网络 w^- 稳定 bootstrap 目标。"
+          description="目标网络 w^- 稳定 bootstrap 目标，主网络 w 负责当前 Q 估计。"
         />
       </section>
 
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as TabKey)}>
-        <TabsList className="grid w-full grid-cols-3">
-          <TabsTrigger value="polynomial">多项式拟合</TabsTrigger>
-          <TabsTrigger value="semi-gradient">半梯度 TD(λ)</TabsTrigger>
-          <TabsTrigger value="action-value">动作值近似 q(s,a,w)</TabsTrigger>
-          <TabsTrigger value="dqn">Deep Q-learning / DQN</TabsTrigger>
+        <TabsList className="grid w-full grid-cols-3 md:grid-cols-6 h-auto">
+          <TabsTrigger value="polynomial">8.1 数学预热</TabsTrigger>
+          <TabsTrigger value="semi-gradient">8.2 半梯度 TD(0)</TabsTrigger>
+          <TabsTrigger value="feature-design">8.3 特征设计</TabsTrigger>
+          <TabsTrigger value="theory">8.4 理论</TabsTrigger>
+          <TabsTrigger value="action-value">8.5 动作值近似</TabsTrigger>
+          <TabsTrigger value="dqn">8.6 Deep Q-learning</TabsTrigger>
         </TabsList>
 
         <TabsContent value="polynomial" className="mt-4">
@@ -110,6 +151,12 @@ export default function Chapter08FaPage() {
         </TabsContent>
         <TabsContent value="semi-gradient" className="mt-4">
           <SemiGradientDemo />
+        </TabsContent>
+        <TabsContent value="feature-design" className="mt-4">
+          <FeatureDesignDemo />
+        </TabsContent>
+        <TabsContent value="theory" className="mt-4">
+          <TheorySection />
         </TabsContent>
         <TabsContent value="action-value" className="mt-4">
           <ActionValueFADemo />
@@ -129,8 +176,10 @@ export default function Chapter08FaPage() {
               content: (
                 <ul className="list-disc pl-5 space-y-2">
                   <li>函数近似用有限参数逼近大状态空间中的值函数。</li>
-                  <li>线性近似中，one-hot 特征等价于表格法；坐标/多项式特征可实现泛化。</li>
-                  <li>半梯度 TD 使用自举目标，更新不是真正的随机梯度下降，但在 mild 条件下收敛。</li>
+                  <li>线性近似中，one-hot 特征等价于表格法；坐标/多项式/距离特征可实现泛化。</li>
+                  <li>半梯度 TD(0) 使用自举目标，更新不是真正的随机梯度下降，但在 mild 条件下收敛。</li>
+                  <li>资格迹 λ&gt;0 是 TD(0) 的拓展，λ=0 退化为教材主体。</li>
+                  <li>动作值函数近似包括 Sarsa with FA 与 Q-learning with FA，指标应区分策略。</li>
                   <li>DQN 用神经网络做非线性近似，并通过经验回放和目标网络稳定训练。</li>
                 </ul>
               ),
@@ -154,7 +203,7 @@ export default function Chapter08FaPage() {
   );
 }
 
-// ------------------- Polynomial fitting (original demo) -------------------
+// ------------------- 8.1 Polynomial fitting prewarm -------------------
 function polynomialFeatures(x: number, degree: number): number[] {
   const phi = [1];
   for (let i = 1; i <= degree; i++) {
@@ -172,18 +221,18 @@ function PolynomialFittingDemo() {
   const [alpha, setAlpha] = useState(0.05);
   const [iterations, setIterations] = useState(200);
   const [noiseStd, setNoiseStd] = useState(0.1);
-  const [seed, setSeed] = useState(0);
+  const [seed, setSeed] = useState(1);
 
   const { weights, predictions } = useMemo(() => {
-    void seed;
+    const rng = mulberry32(seed);
     const numFeatures = degree + 1;
     let w = new Array(numFeatures).fill(0);
     const n = 50;
 
     for (let k = 0; k < iterations; k++) {
-      const x = Math.random() * 2 - 1;
+      const x = rng() * 2 - 1;
       const phi = polynomialFeatures(x, degree);
-      const target = trueValue(x) + (Math.random() * 2 - 1) * noiseStd;
+      const target = trueValue(x) + (rng() * 2 - 1) * noiseStd;
       const pred = phi.reduce((sum, f, i) => sum + f * w[i], 0);
       const error = target - pred;
       for (let i = 0; i < numFeatures; i++) {
@@ -224,7 +273,7 @@ function PolynomialFittingDemo() {
     .join(' ');
 
   return (
-    <InteractiveDemo title="多项式逼近状态值函数">
+    <InteractiveDemo title="8.1 数学预热：曲线拟合如何压缩表格值">
       <div className="grid lg:grid-cols-[1fr_340px] gap-6">
         <div className="flex flex-col items-center justify-center bg-gray-50 rounded-xl p-6 border border-gray-200">
           <svg width={width} height={height} className="bg-white rounded-lg border border-gray-200">
@@ -232,16 +281,16 @@ function PolynomialFittingDemo() {
             <path d={truePathD} fill="none" stroke="#22c55e" strokeWidth={2} />
             <path d={predPathD} fill="none" stroke="#2563eb" strokeWidth={2} strokeDasharray="4 2" />
             <text x={width - padding} y={scaleY(1.3)} textAnchor="end" fontSize={10} fill="#22c55e">
-              真实值 v*(s)
+              真实值
             </text>
             <text x={width - padding} y={scaleY(1.0)} textAnchor="end" fontSize={10} fill="#2563eb">
-              近似值 v̂(s,w)
+              近似值
             </text>
-            <text x={padding} y={height - 4} fontSize={10} fill="#6b7280">状态 s</text>
-            <text x={4} y={padding - 4} fontSize={10} fill="#6b7280">v</text>
+            <text x={padding} y={height - 4} fontSize={10} fill="#6b7280">x</text>
+            <text x={4} y={padding - 4} fontSize={10} fill="#6b7280">y</text>
           </svg>
           <p className="mt-4 text-sm text-gray-500 text-center">
-            绿色实线为真实值函数，蓝色虚线为线性近似结果
+            用多项式基函数拟合 sin(πx)。这与 RL 函数近似共享同一思想：用少量参数压缩无限/大表格。
           </p>
         </div>
 
@@ -285,24 +334,36 @@ function PolynomialFittingDemo() {
             </CardContent>
           </Card>
 
-          <Button onClick={() => setSeed((s) => s + 1)} variant="outline" className="w-full">
-            重新采样训练
-          </Button>
+          <div className="flex gap-2">
+            <input
+              type="number"
+              value={seed}
+              onChange={(e) => setSeed(Number(e.target.value))}
+              className="flex-1 border rounded px-2 py-1 text-sm"
+            />
+            <Button onClick={() => setSeed((s) => s + 1)} variant="outline">
+              <RefreshCw className="w-4 h-4 mr-1" />
+              重新采样
+            </Button>
+          </div>
         </div>
       </div>
     </InteractiveDemo>
   );
 }
 
-// ------------------- Semi-gradient TD(lambda) -------------------
+// ------------------- 8.2 Semi-gradient TD(0) -------------------
 function SemiGradientDemo() {
   const config = DEFAULT_CONFIG;
-  const policy = useMemo(() => deterministicPolicy(RIGHT_POLICY, 5), []);
+  const [policyPreset, setPolicyPreset] = useState<PolicyPreset>('goal');
   const [featureMode, setFeatureMode] = useState<FeatureMode>('coordinate');
   const [degree, setDegree] = useState(2);
   const [alpha, setAlpha] = useState(0.05);
-  const [lambda, setLambda] = useState(0.8);
+  const [lambda, setLambda] = useState(0);
   const [episodes, setEpisodes] = useState(200);
+  const [seed, setSeed] = useState(1);
+
+  const policy = useMemo(() => policyFromPreset(policyPreset), [policyPreset]);
 
   const result = useMemo(() => {
     return semiGradientTD(policy, config, {
@@ -312,24 +373,30 @@ function SemiGradientDemo() {
       polynomialDegree: degree,
       episodes,
       maxSteps: 30,
+      seed,
     });
-  }, [policy, config, alpha, lambda, featureMode, degree, episodes]);
+  }, [policy, config, alpha, lambda, featureMode, degree, episodes, seed]);
 
-  const rmseData = useMemo(() => {
-    return result.valuesHistory.map((v, i) => ({
-      episode: i,
-      rmse: Math.sqrt(
-        v.reduce((sum, val, s) => sum + Math.pow(val - result.trueValues[s], 2), 0) / v.length
-      ),
-    }));
+  const chartData = useMemo(() => {
+    return result.valuesHistory.map((v, i) => {
+      const unweighted = rmse(v, result.trueValues);
+      const weighted = weightedRmse(v, result.trueValues, result.visitCounts);
+      return {
+        episode: i,
+        rmse: unweighted,
+        weightedRmse: weighted,
+        residual: result.residualHistory[i],
+      };
+    });
   }, [result]);
 
   const finalValues = result.valuesHistory[result.valuesHistory.length - 1];
-  const finalRMSE = rmseData[rmseData.length - 1]?.rmse ?? 0;
+  const finalRMSE = chartData[chartData.length - 1]?.rmse ?? 0;
+  const finalWeightedRMSE = chartData[chartData.length - 1]?.weightedRmse ?? 0;
 
   return (
-    <InteractiveDemo title="半梯度 TD(λ)：线性函数近似策略评估">
-      <div className="grid lg:grid-cols-[1fr_340px] gap-6">
+    <InteractiveDemo title="8.2 目标函数与半梯度 TD(0)">
+      <div className="grid lg:grid-cols-[1fr_360px] gap-6">
         <div className="flex flex-col gap-4">
           <div className="grid md:grid-cols-2 gap-4">
             <div className="flex flex-col items-center bg-gray-50 rounded-xl p-4 border border-gray-200">
@@ -343,13 +410,33 @@ function SemiGradientDemo() {
           </div>
           <div className="bg-gray-50 rounded-xl p-6 border border-gray-200">
             <LineChart
-              data={rmseData}
+              data={chartData}
               xKey="episode"
               xLabel="回合"
-              yLabel="RMSE(v̂, v_π)"
-              series={[{ key: 'rmse', name: '值近似 RMSE', color: '#2563eb' }]}
+              yLabel="RMSE / residual"
+              series={[
+                { key: 'rmse', name: '全状态 RMSE', color: '#2563eb' },
+                { key: 'weightedRmse', name: '访问加权 RMSE', color: '#22c55e' },
+                { key: 'residual', name: 'policy Bellman residual', color: '#ef4444' },
+              ]}
               height={220}
             />
+          </div>
+          <div className="bg-white rounded-xl border border-gray-200 p-4">
+            <h3 className="text-sm font-semibold text-gray-700 mb-2">每状态访问次数</h3>
+            <div className="grid grid-cols-3 gap-2 text-center">
+              {result.visitCounts.map((count, s) => (
+                <div
+                  key={s}
+                  className={`rounded p-2 text-xs ${count === 0 ? 'bg-red-50 text-red-700' : 'bg-gray-50'}`}
+                >
+                  s{s + 1}: <span className="font-mono font-semibold">{count}</span>
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-gray-500 mt-2">
+              未访问状态的估计主要来自特征泛化，不能把误差全部归因于 TD 算法。
+            </p>
           </div>
         </div>
 
@@ -359,6 +446,22 @@ function SemiGradientDemo() {
               <CardTitle className="text-base">设置</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
+              <div>
+                <label className="text-sm text-gray-700 block mb-1">策略预设</label>
+                <Select value={policyPreset} onValueChange={(v) => setPolicyPreset(v as PolicyPreset)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="goal">通向目标的确定性策略</SelectItem>
+                    <SelectItem value="random">uniform random policy</SelectItem>
+                    <SelectItem value="right">全向右反例策略</SelectItem>
+                  </SelectContent>
+                </Select>
+                {policyPreset === 'right' && (
+                  <p className="text-xs text-amber-600 mt-1">反例：在右边界反复碰撞。</p>
+                )}
+              </div>
               <div>
                 <label className="text-sm text-gray-700 block mb-1">特征构造</label>
                 <Select value={featureMode} onValueChange={(v) => setFeatureMode(v as FeatureMode)}>
@@ -386,7 +489,7 @@ function SemiGradientDemo() {
                 <div className="mt-1 text-center font-mono text-sm text-gray-700">{alpha.toFixed(3)}</div>
               </div>
               <div>
-                <div className="text-sm text-gray-600 mb-1">资格迹衰减 λ</div>
+                <div className="text-sm text-gray-600 mb-1">资格迹衰减 λ（教材拓展）</div>
                 <Slider value={[lambda]} min={0} max={0.99} step={0.01} onValueChange={([v]) => setLambda(v)} />
                 <div className="mt-1 text-center font-mono text-sm text-gray-700">{lambda.toFixed(2)}</div>
               </div>
@@ -394,6 +497,18 @@ function SemiGradientDemo() {
                 <div className="text-sm text-gray-600 mb-1">训练回合数</div>
                 <Slider value={[episodes]} min={10} max={500} step={10} onValueChange={([v]) => setEpisodes(v)} />
                 <div className="mt-1 text-center font-mono text-sm text-gray-700">{episodes}</div>
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="number"
+                  value={seed}
+                  onChange={(e) => setSeed(Number(e.target.value))}
+                  className="flex-1 border rounded px-2 py-1 text-sm"
+                />
+                <Button onClick={() => setSeed((s) => s + 1)} variant="outline" size="sm">
+                  <RefreshCw className="w-4 h-4 mr-1" />
+                  重新随机
+                </Button>
               </div>
             </CardContent>
           </Card>
@@ -403,7 +518,8 @@ function SemiGradientDemo() {
               <CardTitle className="text-base">结果</CardTitle>
             </CardHeader>
             <CardContent className="text-sm text-gray-700 space-y-2">
-              <div>最终 RMSE：<span className="font-mono font-semibold">{finalRMSE.toFixed(4)}</span></div>
+              <div>最终全状态 RMSE：<span className="font-mono font-semibold">{finalRMSE.toFixed(4)}</span></div>
+              <div>最终访问加权 RMSE：<span className="font-mono font-semibold">{finalWeightedRMSE.toFixed(4)}</span></div>
               <div>权重维度：<span className="font-mono">{result.weightsHistory[0].length}</span></div>
               <div className="font-mono text-xs break-all">
                 w ≈ [{result.weightsHistory[result.weightsHistory.length - 1].map((w) => w.toFixed(2)).join(', ')}]
@@ -416,7 +532,119 @@ function SemiGradientDemo() {
   );
 }
 
-// ------------------- DQN skeleton -------------------
+// ------------------- 8.3 Feature design -------------------
+function FeatureDesignDemo() {
+  const [mode, setMode] = useState<FeatureMode>('coordinate');
+  const [degree, setDegree] = useState(2);
+
+  return (
+    <InteractiveDemo title="8.3 特征设计与泛化">
+      <div className="grid lg:grid-cols-[1fr_340px] gap-6">
+        <div className="bg-white rounded-xl border border-gray-200 p-4">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>状态</TableHead>
+                <TableHead>特征向量 φ(s)</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {Array.from({ length: 9 }, (_, s) => (
+                <TableRow key={s}>
+                  <TableCell className="font-mono">s{s + 1}</TableCell>
+                  <TableCell className="font-mono text-xs">{featureVectorText(s, mode, degree)}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+
+        <div className="space-y-4">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">特征构造</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Select value={mode} onValueChange={(v) => setMode(v as FeatureMode)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="onehot">One-hot（表格等价，无泛化）</SelectItem>
+                  <SelectItem value="coordinate">坐标归一化（平滑泛化）</SelectItem>
+                  <SelectItem value="polynomial">坐标多项式（非线性泛化）</SelectItem>
+                  <SelectItem value="distance">距离目标 + 禁区（领域知识）</SelectItem>
+                </SelectContent>
+              </Select>
+              {mode === 'polynomial' && (
+                <div>
+                  <div className="text-sm text-gray-600 mb-1">多项式阶数</div>
+                  <Slider value={[degree]} min={1} max={4} step={1} onValueChange={([v]) => setDegree(v)} />
+                  <div className="mt-1 text-center font-mono text-sm text-gray-700">{degree}</div>
+                </div>
+              )}
+              <p className="text-sm text-gray-600">
+                不同特征决定相近状态是否获得相近的值估计，从而影响泛化能力与逼近误差。
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    </InteractiveDemo>
+  );
+}
+
+// ------------------- 8.4 Theory -------------------
+function TheorySection() {
+  return (
+    <InteractiveDemo title="8.4 投影、Bellman 误差与收敛">
+      <div className="grid md:grid-cols-2 gap-4">
+        <FormulaCard
+          title="投影 Bellman 方程（PBE）"
+          formula={
+            <KaTeX
+              math={String.raw`\Pi_\mathcal{F} T_\pi V_w = V_w`}
+              display
+            />
+          }
+          description="Π_F 把任意值函数投影到函数近似子空间，半梯度 TD 寻找 PBE 的不动点。"
+        />
+        <FormulaCard
+          title="均方 Bellman 误差"
+          formula={
+            <KaTeX
+              math={String.raw`\text{MSBE}(w) = \mathbb{E}\bigl[(r + \gamma \hat{v}(s',w) - \hat{v}(s,w))^2\bigr]`}
+              display
+            />
+          }
+          description="半梯度 TD(0) 不是 MSBE 的纯梯度下降，但可收敛到 PBE 的近似解。"
+        />
+        <FormulaCard
+          title="收敛条件"
+          formula={
+            <KaTeX
+              math={String.raw`\alpha_t \to 0, \quad \sum_t \alpha_t = \infty, \quad \sum_t \alpha_t^2 < \infty`}
+              display
+            />
+          }
+          description="线性函数近似、on-policy 数据与递减步长下，半梯度 TD(0) 可收敛。"
+        />
+        <FormulaCard
+          title="值函数近似 vs 表格法"
+          formula={
+            <KaTeX
+              math={String.raw`\hat{v}(s,w) \approx v_\pi(s), \quad \forall s \in \mathcal{S}`}
+              display
+            />
+          }
+          description="表格法是 one-hot 特征下的特例；函数近似把表格的一列压缩为参数向量。"
+        />
+      </div>
+    </InteractiveDemo>
+  );
+}
+
+// ------------------- 8.5 Action-value FA -------------------
 function ActionValueFADemo() {
   const config = DEFAULT_CONFIG;
   const qStar = useMemo(() => estimateTrueActionValues(config), [config]);
@@ -425,10 +653,9 @@ function ActionValueFADemo() {
   const [alpha, setAlpha] = useState(0.05);
   const [epsilon, setEpsilon] = useState(0.3);
   const [episodes, setEpisodes] = useState(200);
-  const [seed, setSeed] = useState(0);
+  const [seed, setSeed] = useState(1);
 
   const result = useMemo(() => {
-    void seed;
     return actionValueFA(config, {
       alpha,
       epsilon,
@@ -437,23 +664,57 @@ function ActionValueFADemo() {
       maxSteps: 30,
       featureMode,
       algorithm,
+      seed,
     });
   }, [config, algorithm, featureMode, alpha, epsilon, episodes, seed]);
 
   const finalQ = result.qHistory[result.qHistory.length - 1];
   const finalPolicy = useMemo(() => greedyPolicy(finalQ), [finalQ]);
-  const finalValues = useMemo(() => actionValueToStateValue(finalQ), [finalQ]);
+  const behaviorPolicy = result.behaviorPolicyHistory[result.behaviorPolicyHistory.length - 1];
+  const behaviorValues = useMemo(() => policyWeightedStateValues(finalQ, behaviorPolicy), [finalQ, behaviorPolicy]);
+  const greedyValues = useMemo(() => actionValueToStateValue(finalQ), [finalQ]);
   const finalRMSE = useMemo(() => qTableRMSE(finalQ, qStar), [finalQ, qStar]);
+
+  const chartData = useMemo(() => {
+    return result.residualHistory.map((res, i) => ({
+      episode: i,
+      residual: res,
+      rmse: qTableRMSE(result.qHistory[i], qStar),
+    }));
+  }, [result, qStar]);
 
   const last = result.lastUpdate;
 
   return (
-    <InteractiveDemo title="动作值函数近似 q(s,a,w)">
-      <div className="grid lg:grid-cols-[1fr_340px] gap-6">
+    <InteractiveDemo title="8.5 动作值函数近似 q(s,a,w)">
+      <div className="grid lg:grid-cols-[1fr_360px] gap-6">
         <div className="flex flex-col gap-4">
           <div className="flex flex-col items-center justify-center bg-gray-50 rounded-xl p-6 border border-gray-200">
-            <GridWorld config={config} policy={finalPolicy} values={finalValues} showValues className="max-w-full" />
-            <p className="mt-3 text-sm text-gray-500 text-center">训练结束后的贪心策略与状态值</p>
+            <GridWorld
+              config={config}
+              policy={finalPolicy}
+              values={algorithm === 'qlearning' ? greedyValues : behaviorValues}
+              showValues
+              className="max-w-full"
+            />
+            <p className="mt-3 text-sm text-gray-500 text-center">
+              {algorithm === 'qlearning'
+                ? 'Q-learning with FA：显示贪心派生价值'
+                : 'Sarsa with FA：显示当前 ε-soft 行为策略价值'}
+            </p>
+          </div>
+          <div className="bg-gray-50 rounded-xl p-6 border border-gray-200">
+            <LineChart
+              data={chartData}
+              xKey="episode"
+              xLabel="回合"
+              yLabel={algorithm === 'qlearning' ? '最优 Bellman 残差 / q* RMSE' : '同策略 Bellman 残差 / q* RMSE'}
+              series={[
+                { key: 'residual', name: algorithm === 'qlearning' ? 'Bellman optimality residual' : 'behavior-policy Bellman residual', color: '#ef4444' },
+                { key: 'rmse', name: 'q* RMSE（参考）', color: '#2563eb' },
+              ]}
+              height={220}
+            />
           </div>
           {last && (
             <div className="bg-white rounded-xl border border-gray-200 p-4 text-sm">
@@ -485,7 +746,7 @@ function ActionValueFADemo() {
                 <label className="text-sm text-gray-700 block mb-1">算法</label>
                 <Select value={algorithm} onValueChange={(v) => setAlgorithm(v as 'sarsa' | 'qlearning')}>
                   <SelectTrigger>
-                    <SelectValue placeholder="选择算法" />
+                    <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="sarsa">Sarsa with FA</SelectItem>
@@ -497,7 +758,7 @@ function ActionValueFADemo() {
                 <label className="text-sm text-gray-700 block mb-1">特征构造</label>
                 <Select value={featureMode} onValueChange={(v) => setFeatureMode(v as ActionValueFeatureMode)}>
                   <SelectTrigger>
-                    <SelectValue placeholder="选择特征" />
+                    <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="onehot">one-hot(s,a) — 表格等价</SelectItem>
@@ -520,31 +781,42 @@ function ActionValueFADemo() {
                 <Slider value={[episodes]} min={50} max={500} step={50} onValueChange={([v]) => setEpisodes(v)} />
                 <div className="mt-1 text-center font-mono text-sm text-gray-700">{episodes}</div>
               </div>
+              <div className="flex gap-2">
+                <input
+                  type="number"
+                  value={seed}
+                  onChange={(e) => setSeed(Number(e.target.value))}
+                  className="flex-1 border rounded px-2 py-1 text-sm"
+                />
+                <Button onClick={() => setSeed((s) => s + 1)} variant="outline" size="sm">
+                  <RefreshCw className="w-4 h-4 mr-1" />
+                  重新随机
+                </Button>
+              </div>
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-base">结果</CardTitle>
+              <CardTitle className="text-base">结果与说明</CardTitle>
             </CardHeader>
-            <CardContent className="text-sm text-gray-700 space-y-1">
-              <div>最终 RMSE（相对 q*）：<span className="font-mono font-semibold">{finalRMSE.toFixed(4)}</span></div>
-              <div>权重维度：<span className="font-mono">{result.weightsHistory[0].length}</span></div>
-              <div className="text-xs text-gray-500 mt-1">
-                共享特征包含：[1, rowNorm, colNorm, distanceToTarget, isForbidden] + action one-hot + 交互项
+            <CardContent className="text-sm text-gray-700 space-y-2">
+              <div>
+                {algorithm === 'qlearning'
+                  ? 'Q-learning 显示 Bellman optimality residual 与贪心派生价值。'
+                  : 'Sarsa 固定 ε 时显示 behavior-policy Bellman residual；q* RMSE 仅作为参考，不能断言收敛到 q*。'}
               </div>
+              <div>最终 q* RMSE：<span className="font-mono font-semibold">{finalRMSE.toFixed(4)}</span></div>
+              <div>权重维度：<span className="font-mono">{result.weightsHistory[0].length}</span></div>
             </CardContent>
           </Card>
-
-          <Button onClick={() => setSeed((s) => s + 1)} variant="outline" className="w-full">
-            重新随机训练
-          </Button>
         </div>
       </div>
     </InteractiveDemo>
   );
 }
 
+// ------------------- 8.6 DQN -------------------
 function DQNDemo() {
   const config = DEFAULT_CONFIG;
   const qStar = useMemo(() => estimateTrueActionValues(config), [config]);
@@ -555,10 +827,9 @@ function DQNDemo() {
   const [replayCapacity, setReplayCapacity] = useState(2000);
   const [targetUpdateInterval, setTargetUpdateInterval] = useState(100);
   const [episodes, setEpisodes] = useState(200);
-  const [seed, setSeed] = useState(0);
+  const [seed, setSeed] = useState(1);
 
   const result = useMemo(() => {
-    void seed;
     return dqnGridWorld(config, {
       hiddenSize,
       alpha,
@@ -569,6 +840,7 @@ function DQNDemo() {
       targetUpdateInterval,
       episodes,
       maxSteps: 30,
+      seed,
     });
   }, [config, hiddenSize, alpha, epsilon, batchSize, replayCapacity, targetUpdateInterval, episodes, seed]);
 
@@ -585,19 +857,36 @@ function DQNDemo() {
   }, [result]);
 
   return (
-    <InteractiveDemo title="Deep Q-learning / DQN：神经网络 + 经验回放 + 目标网络">
-      <div className="grid lg:grid-cols-[1fr_340px] gap-6">
+    <InteractiveDemo title="8.6 Deep Q-learning / DQN：神经网络 + 经验回放 + 目标网络">
+      <div className="grid lg:grid-cols-[1fr_360px] gap-6">
         <div className="flex flex-col gap-4">
           <div className="flex flex-col items-center justify-center bg-gray-50 rounded-xl p-6 border border-gray-200">
             <GridWorld config={config} policy={finalPolicy} values={finalValues} showValues className="max-w-full" />
             <p className="mt-3 text-sm text-gray-500 text-center">训练结束后 DQN 的贪心策略与状态值</p>
           </div>
+
+          <div className="bg-blue-50 rounded-xl p-4 border border-blue-100 text-sm text-gray-700">
+            <h3 className="font-semibold text-blue-800 mb-2">DQN 训练流程</h3>
+            <ol className="list-decimal pl-5 space-y-1">
+              <li>与环境交互得到 transition (s, a, r, s&apos;, done)；</li>
+              <li>存入经验回放 replay buffer；</li>
+              <li>从 buffer 中均匀抽取 mini-batch；</li>
+              <li>用目标网络计算 y = r + γ max_a&apos; Q(s&apos;,a&apos;; w⁻)；</li>
+              <li>用主网络计算 Q(s,a; w)；</li>
+              <li>损失 L = ½(y − Q)²，梯度更新主网络；</li>
+              <li>每隔固定步数把主网络参数复制给目标网络。</li>
+            </ol>
+            <p className="mt-2 text-xs text-gray-600">
+              经验回放通过随机抽样降低相邻经验的时序相关性，并提高历史样本复用率。
+            </p>
+          </div>
+
           <div className="bg-gray-50 rounded-xl p-6 border border-gray-200">
             <LineChart
               data={lossData}
               xKey="step"
               xLabel="训练步"
-              yLabel="均方误差损失"
+              yLabel="½(y − Q)²"
               series={[{ key: 'loss', name: 'DQN Loss', color: '#ef4444' }]}
               height={220}
             />
@@ -605,7 +894,7 @@ function DQNDemo() {
           {result.lastBatch.length > 0 && (
             <div className="bg-white rounded-xl border border-gray-200 p-4">
               <h3 className="font-semibold text-gray-800 mb-2 text-sm">
-                最近一次训练采样的 mini-batch（共 {result.lastBatch.length} 条）
+                最近一次 mini-batch（共 {result.lastBatch.length} 条）
               </h3>
               <div className="overflow-x-auto">
                 <Table>
@@ -618,7 +907,7 @@ function DQNDemo() {
                       <TableHead className="w-14">done</TableHead>
                       <TableHead>target y</TableHead>
                       <TableHead>Q(s,a)</TableHead>
-                      <TableHead>TD error / loss</TableHead>
+                      <TableHead>loss</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -631,7 +920,7 @@ function DQNDemo() {
                         <TableCell className="font-mono">{row.done ? '是' : '否'}</TableCell>
                         <TableCell className="font-mono">{row.target.toFixed(3)}</TableCell>
                         <TableCell className="font-mono">{row.prediction.toFixed(3)}</TableCell>
-                        <TableCell className="font-mono">{(row.loss).toFixed(4)}</TableCell>
+                        <TableCell className="font-mono">{row.loss.toFixed(4)}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -682,6 +971,18 @@ function DQNDemo() {
                 <Slider value={[episodes]} min={50} max={500} step={50} onValueChange={([v]) => setEpisodes(v)} />
                 <div className="mt-1 text-center font-mono text-sm text-gray-700">{episodes}</div>
               </div>
+              <div className="flex gap-2">
+                <input
+                  type="number"
+                  value={seed}
+                  onChange={(e) => setSeed(Number(e.target.value))}
+                  className="flex-1 border rounded px-2 py-1 text-sm"
+                />
+                <Button onClick={() => setSeed((s) => s + 1)} variant="outline" size="sm">
+                  <RefreshCw className="w-4 h-4 mr-1" />
+                  重新随机
+                </Button>
+              </div>
             </CardContent>
           </Card>
 
@@ -690,15 +991,11 @@ function DQNDemo() {
               <CardTitle className="text-base">结果</CardTitle>
             </CardHeader>
             <CardContent className="text-sm text-gray-700 space-y-1">
-              <div>最终 RMSE（相对 q*）：<span className="font-mono font-semibold">{finalRMSE.toFixed(4)}</span></div>
+              <div>最终 q* RMSE：<span className="font-mono font-semibold">{finalRMSE.toFixed(4)}</span></div>
               <div>回放缓冲当前大小：<span className="font-mono">{result.finalReplaySize}</span></div>
               <div>训练步数：<span className="font-mono">{result.lossHistory.length}</span></div>
             </CardContent>
           </Card>
-
-          <Button onClick={() => setSeed((s) => s + 1)} variant="outline" className="w-full">
-            重新随机训练
-          </Button>
         </div>
       </div>
     </InteractiveDemo>

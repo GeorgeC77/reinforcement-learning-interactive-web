@@ -47,6 +47,11 @@ export default function Chapter07OverviewPage() {
           />
           <ConceptCard
             icon={<ArrowRight className="w-5 h-5" />}
+            title="n-step Sarsa"
+            description="多步 TD 控制，在 TD 与蒙特卡洛回报之间做权衡。"
+          />
+          <ConceptCard
+            icon={<ArrowRight className="w-5 h-5" />}
             title="TD 与 MC/DP 的关系"
             description="TD 是蒙特卡洛采样与动态规划自举的折中。"
           />

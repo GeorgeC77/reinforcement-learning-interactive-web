@@ -22,15 +22,15 @@ import {
   deterministicPolicy,
   randomPolicy,
   epsilonGreedyPolicy,
-  greedyPolicy,
   actionValueToStateValue,
   policyWeightedStateValues,
   policyBellmanResidualV,
   policyBellmanResidualQ,
   optimalBellmanResidualQ,
   epsilonAtEpisode,
-  valueIteration,
   solveStateValues,
+  estimateTrueActionValues,
+  isTerminal,
   tdZeroPrediction,
   sarsa,
   qLearning,
@@ -42,6 +42,7 @@ import {
   type Policy,
   type GridWorldConfig,
   type EpsilonScheduleMode,
+
   type TDUpdateRecord,
   type PredictionFrame,
   type ControlFrame,
@@ -72,7 +73,7 @@ type TdDemoProps = {
 };
 
 const RIGHT_POLICY: Action[] = [1, 1, 1, 1, 1, 1, 1, 1, 1];
-const GOAL_POLICY: Action[] = [1, 2, 4, 1, 2, 4, 4, 1, 4];
+const GOAL_POLICY: Action[] = [1, 2, 2, 1, 2, 2, 1, 1, 4];
 const H_OPTIONS = [10, 20, 30, 50, 100, 200];
 
 function isPredictionAlgorithm(a: AlgorithmKind) {
@@ -91,17 +92,28 @@ function policyFromPreset(preset: string, numStates: number): Policy {
   if (preset === 'right') return deterministicPolicy(RIGHT_POLICY, 5);
   if (preset === 'random') return randomPolicy(numStates, 5);
   return deterministicPolicy(GOAL_POLICY, 5);
+
 }
 
-function computeGreedyAgreement(q: number[][], optimalPolicy: Policy, config: GridWorldConfig) {
+function computeGreedyAgreement(q: number[][], qStar: number[][], config: GridWorldConfig) {
+  const tolerance = 1e-6;
   let total = 0;
   let match = 0;
   for (let s = 0; s < q.length; s++) {
-    if (s === config.targetState) continue;
+    if (isTerminal(s, config)) continue;
     total++;
-    const greedyAction = q[s].indexOf(Math.max(...q[s]));
-    const optAction = optimalPolicy[s].indexOf(Math.max(...optimalPolicy[s]));
-    if (greedyAction === optAction) match++;
+    const maxQ = Math.max(...q[s]);
+    const greedyActions = q[s]
+      .map((val, a) => ({ val, a }))
+      .filter(({ val }) => Math.abs(val - maxQ) <= tolerance)
+      .map(({ a }) => a);
+    const maxQStar = Math.max(...qStar[s]);
+    const optimalActions = qStar[s]
+      .map((val, a) => ({ val, a }))
+      .filter(({ val }) => Math.abs(val - maxQStar) <= tolerance)
+      .map(({ a }) => a);
+    const set = new Set(optimalActions);
+    if (greedyActions.some((a) => set.has(a))) match++;
   }
   return total === 0 ? 0 : match / total;
 }
@@ -123,17 +135,11 @@ function UpdateFormula({
   algorithm,
   alpha,
   gamma,
-  nStep,
-  updates,
-  index,
 }: {
   update: TDUpdateRecord;
   algorithm: AlgorithmKind;
   alpha: number;
   gamma: number;
-  nStep: number;
-  updates: TDUpdateRecord[];
-  index: number;
 }) {
   const s = stateName(update.state);
   const sp = stateName(update.nextState);
@@ -153,17 +159,16 @@ function UpdateFormula({
   }
 
   if (algorithm === 'nstep') {
-    // Collect up to n rewards from consecutive updates in the same episode.
-    const rewards: number[] = [];
-    const ep = update.episode;
-    for (let i = index; i < updates.length && updates[i].episode === ep && rewards.length < nStep; i++) {
-      rewards.push(updates[i].reward);
-    }
+    const rewards = update.rewardTerms ?? [update.reward];
     const rewardTerms = rewards
       .map((rew, k) => `${k === 0 ? '' : String.raw`+ ${gamma.toFixed(2)}^{${k}} \cdot `}${formatVal(rew)}`)
       .join(' ');
+    const bootStr =
+      update.bootstrapState !== undefined && update.bootstrapAction !== undefined
+        ? String.raw`Q(${stateName(update.bootstrapState)}, ${actionName(update.bootstrapAction)})`
+        : boot;
     const bootTerm = update.bootstrapValue !== 0
-      ? String.raw`+ ${gamma.toFixed(2)}^{${rewards.length}} \cdot ${boot}`
+      ? String.raw`+ ${gamma.toFixed(2)}^{${rewards.length}} \cdot ${bootStr}`
       : '';
     return (
       <KaTeX
@@ -215,7 +220,7 @@ export default function TdDemo({ title, subtitle, algorithms, defaultAlgorithm }
   const [horizonH, setHorizonH] = useState(30);
   const [seed, setSeed] = useState(1);
   const [task, setTask] = useState<'continuing' | 'episodic'>(getDefaultTask(defaultAlgorithm));
-  const [policyPreset, setPolicyPreset] = useState<'goal' | 'random' | 'right' | 'custom'>('goal');
+  const [policyPreset, setPolicyPreset] = useState<'goal' | 'random' | 'right'>('goal');
   const [viewMode, setViewMode] = useState<'transition' | 'episode'>('transition');
   const [valueMode, setValueMode] = useState<'behavior' | 'greedy'>(getDefaultValueMode(defaultAlgorithm));
   const [step, setStep] = useState(0);
@@ -254,7 +259,10 @@ export default function TdDemo({ title, subtitle, algorithms, defaultAlgorithm }
     }
   }, [algorithm, alpha, epsilon, epsilonMode, lambda, nStep, episodes, horizonH, seed, config, policy]);
 
-  const totalSteps = viewMode === 'transition' ? result.updates.length : result.frames.length - 1;
+  const totalSteps =
+    viewMode === 'transition'
+      ? Math.max(0, result.updates.length - 1)
+      : Math.max(0, result.frames.length - 1);
   const safeStep = Math.min(step, totalSteps);
   const currentUpdate = viewMode === 'transition' ? result.updates[safeStep] : null;
   const currentFrame = viewMode === 'episode' ? result.frames[safeStep] : null;
@@ -274,21 +282,19 @@ export default function TdDemo({ title, subtitle, algorithms, defaultAlgorithm }
         };
       }
       const q = currentUpdate.qAfter!;
-      const eps = epsilonAtEpisode(currentUpdate.episode, epsilon, epsilonMode);
-      const behaviorPolicy = epsilonGreedyPolicy(q, eps);
-      const greedyPolicyComputed = greedyPolicy(q);
-      const chosenPolicy = valueMode === 'behavior' ? behaviorPolicy : greedyPolicyComputed;
+      const behaviorPolicyBefore = currentUpdate.behaviorPolicyBefore ?? epsilonGreedyPolicy(q, epsilon);
+      const behaviorPolicyAfter = currentUpdate.behaviorPolicyAfter ?? behaviorPolicyBefore;
       const values = valueMode === 'behavior'
-        ? policyWeightedStateValues(q, chosenPolicy)
+        ? policyWeightedStateValues(q, behaviorPolicyAfter)
         : actionValueToStateValue(q);
       return {
         values,
-        policy: chosenPolicy,
+        policy: behaviorPolicyBefore,
         highlightState: currentUpdate.state,
         highlightNextState: currentUpdate.nextState,
         highlightUpdatedState: currentUpdate.state,
         highlightAction: { state: currentUpdate.state, action: currentUpdate.action },
-        valueLabel: valueMode === 'behavior' ? '行为策略价值' : '贪心派生价值',
+        valueLabel: valueMode === 'behavior' ? '行为策略价值（更新后）' : '贪心派生价值（更新后）',
       };
     }
 
@@ -374,11 +380,11 @@ export default function TdDemo({ title, subtitle, algorithms, defaultAlgorithm }
 
   const controlPanelData = useMemo(() => {
     if (isPrediction) return [];
-    let optimalPolicy: Policy;
+    let qStar: number[][];
     try {
-      optimalPolicy = valueIteration(config).policies.at(-1) ?? randomPolicy(numStates, 5);
+      qStar = estimateTrueActionValues(config);
     } catch {
-      optimalPolicy = randomPolicy(numStates, 5);
+      qStar = Array.from({ length: numStates }, () => new Array(5).fill(0));
     }
     return Array.from({ length: episodes }, (_, ep) => {
       const epUpdates = result.updates.filter((u) => u.episode === ep);
@@ -388,7 +394,7 @@ export default function TdDemo({ title, subtitle, algorithms, defaultAlgorithm }
       const residual = algorithm === 'qlearning'
         ? optimalBellmanResidualQ(frame.qValues, config)
         : policyBellmanResidualQ(frame.qValues, frame.behaviorPolicy, config);
-      const greedyAgreement = computeGreedyAgreement(frame.qValues, optimalPolicy, config);
+      const greedyAgreement = computeGreedyAgreement(frame.qValues, qStar, config);
       return { episode: ep + 1, return: ret, length, residual, greedyAgreement };
     });
   }, [result, isPrediction, config, algorithm, episodes, numStates]);
@@ -429,7 +435,7 @@ export default function TdDemo({ title, subtitle, algorithms, defaultAlgorithm }
               />
               <p className="mt-4 text-sm text-gray-500 text-center">
                 {viewMode === 'transition'
-                  ? `transition ${safeStep} / ${totalSteps}`
+                  ? `transition ${safeStep + 1} / ${result.updates.length}`
                   : `episode ${safeStep} / ${totalSteps}`}
                 {' '}· {display.valueLabel}
                 {currentEpsilon !== null && (
@@ -486,9 +492,6 @@ export default function TdDemo({ title, subtitle, algorithms, defaultAlgorithm }
                       algorithm={algorithm}
                       alpha={alpha}
                       gamma={config.gamma}
-                      nStep={nStep}
-                      updates={result.updates}
-                      index={safeStep}
                     />
                   </div>
                   {currentUpdate.done && (
@@ -590,7 +593,7 @@ export default function TdDemo({ title, subtitle, algorithms, defaultAlgorithm }
                 {isPrediction && (
                   <div>
                     <div className="text-sm text-gray-600 mb-1">策略预设</div>
-                    <Select value={policyPreset} onValueChange={(v) => setPolicyPreset(v as typeof policyPreset)}>
+                    <Select value={policyPreset} onValueChange={(v) => setPolicyPreset(v as 'goal' | 'random' | 'right')}>
                       <SelectTrigger className="w-full">
                         <SelectValue />
                       </SelectTrigger>
@@ -598,7 +601,6 @@ export default function TdDemo({ title, subtitle, algorithms, defaultAlgorithm }
                         <SelectItem value="goal">通向目标的确定性策略</SelectItem>
                         <SelectItem value="random">uniform random policy</SelectItem>
                         <SelectItem value="right">全向右反例策略</SelectItem>
-                        <SelectItem value="custom">用户自定义（默认 goal）</SelectItem>
                       </SelectContent>
                     </Select>
                     {policyPreset === 'right' && (
@@ -726,7 +728,13 @@ export default function TdDemo({ title, subtitle, algorithms, defaultAlgorithm }
           data={residualData}
           xKey="episode"
           xLabel="episode"
-          yLabel="max |δ|"
+          yLabel={
+            isPrediction
+              ? '‖TπV - V‖∞'
+              : algorithm === 'qlearning'
+                ? '‖T*Q - Q‖∞'
+                : '‖TπQ - Q‖∞'
+          }
           series={[{ key: 'residual', name: 'Bellman residual', color: '#ef4444' }]}
         />
         <p className="mt-2 text-sm text-gray-600">
@@ -759,8 +767,8 @@ export default function TdDemo({ title, subtitle, algorithms, defaultAlgorithm }
               xLabel="episode"
               yLabel="回报 / 长度"
               series={[
-                { key: 'return', name: 'episode return', color: '#2563eb' },
-                { key: 'length', name: 'episode length', color: '#f59e0b' },
+                { key: 'return', name: task === 'episodic' ? 'episode return' : '长度 H 的截断轨迹累计奖励', color: '#2563eb' },
+                { key: 'length', name: task === 'episodic' ? 'episode length' : '截断轨迹长度', color: '#f59e0b' },
               ]}
             />
             <LineChart

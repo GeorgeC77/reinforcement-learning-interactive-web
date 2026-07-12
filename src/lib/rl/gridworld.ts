@@ -969,6 +969,16 @@ export interface TDUpdateRecord {
   qAfter?: number[][];
   nextAction?: Action;
   behaviorPolicy?: number[];
+  behaviorPolicyBefore?: Policy;
+  behaviorPolicyAfter?: Policy;
+  greedyPolicyBefore?: Policy;
+  greedyPolicyAfter?: Policy;
+  rewardTerms?: number[];
+  bootstrapState?: number;
+  bootstrapAction?: Action;
+  bootstrapExponent?: number;
+  naturalTerminal?: boolean;
+  truncated?: boolean;
 }
 
 export interface PredictionFrame {
@@ -1142,6 +1152,10 @@ export function tdZeroPrediction(
         valuesBefore,
         valuesAfter: copyV(v),
         behaviorPolicy: policy[state],
+        behaviorPolicyBefore: policy,
+        behaviorPolicyAfter: policy,
+        naturalTerminal: result.done,
+        truncated: false,
       });
       state = result.nextState;
       time++;
@@ -1202,8 +1216,12 @@ export function sarsa(
       const target = result.reward + config.gamma * bootstrap;
       const tdError = target - q[state][action];
       const qBefore = copyQ(q);
-      const behaviorPolicy = epsilonGreedyPolicy(q, epsilon, rng);
+      const behaviorPolicyBefore = epsilonGreedyPolicy(q, epsilon);
+      const greedyPolicyBefore = greedyPolicy(q);
       q[state][action] += alpha * tdError;
+      const qAfter = copyQ(q);
+      const behaviorPolicyAfter = epsilonGreedyPolicy(qAfter, epsilon);
+      const greedyPolicyAfter = greedyPolicy(qAfter);
       updates.push({
         episode: ep,
         time,
@@ -1218,9 +1236,15 @@ export function sarsa(
         tdError,
         newEstimate: q[state][action],
         qBefore,
-        qAfter: copyQ(q),
+        qAfter,
         nextAction,
-        behaviorPolicy: behaviorPolicy[state],
+        behaviorPolicy: behaviorPolicyBefore[state],
+        behaviorPolicyBefore,
+        behaviorPolicyAfter,
+        greedyPolicyBefore,
+        greedyPolicyAfter,
+        naturalTerminal: result.done,
+        truncated: false,
       });
       if (result.done) break;
       state = result.nextState;
@@ -1278,7 +1302,12 @@ export function qLearning(
       const target = result.reward + config.gamma * maxQNext;
       const tdError = target - q[state][action];
       const qBefore = copyQ(q);
+      const behaviorPolicyBefore = epsilonGreedyPolicy(q, epsilon);
+      const greedyPolicyBefore = greedyPolicy(q);
       q[state][action] += alpha * tdError;
+      const qAfter = copyQ(q);
+      const behaviorPolicyAfter = epsilonGreedyPolicy(qAfter, epsilon);
+      const greedyPolicyAfter = greedyPolicy(qAfter);
       updates.push({
         episode: ep,
         time,
@@ -1293,8 +1322,14 @@ export function qLearning(
         tdError,
         newEstimate: q[state][action],
         qBefore,
-        qAfter: copyQ(q),
+        qAfter,
         behaviorPolicy: behaviorPolicy[state],
+        behaviorPolicyBefore,
+        behaviorPolicyAfter,
+        greedyPolicyBefore,
+        greedyPolicyAfter,
+        naturalTerminal: result.done,
+        truncated: false,
       });
       state = result.nextState;
       time++;
@@ -1405,7 +1440,12 @@ export function nStepSarsa(
         const a = actions[tau];
         const tdError = target - q[s][a];
         const qBefore = copyQ(q);
+        const behaviorPolicyBefore = epsilonGreedyPolicy(qBefore, epsilon);
+        const greedyPolicyBefore = greedyPolicy(qBefore);
         q[s][a] += alpha * tdError;
+        const qAfter = copyQ(q);
+        const behaviorPolicyAfter = epsilonGreedyPolicy(qAfter, epsilon);
+        const greedyPolicyAfter = greedyPolicy(qAfter);
 
         const bootstrapValue =
           tau + n < T
@@ -1413,6 +1453,20 @@ export function nStepSarsa(
             : truncated && tau + n === T && actions.length > T
               ? qBefore[states[T]][actions[T]]
               : 0;
+
+        const end = Math.min(tau + n, T);
+        const rewardTerms: number[] = [];
+        for (let i = tau + 1; i <= end; i++) rewardTerms.push(rewards[i]);
+        const bootstrapExponent = rewardTerms.length;
+        let bootstrapState: number | undefined;
+        let bootstrapAction: Action | undefined;
+        if (tau + n < T) {
+          bootstrapState = states[tau + n];
+          bootstrapAction = actions[tau + n];
+        } else if (truncated && tau + n === T && actions.length > T) {
+          bootstrapState = states[T];
+          bootstrapAction = actions[T];
+        }
 
         updates.push({
           episode: ep,
@@ -1428,8 +1482,18 @@ export function nStepSarsa(
           tdError,
           newEstimate: q[s][a],
           qBefore,
-          qAfter: copyQ(q),
-          behaviorPolicy: epsilonGreedyPolicy(q, epsilon, rng)[s],
+          qAfter,
+          behaviorPolicy: behaviorPolicyBefore[s],
+          behaviorPolicyBefore,
+          behaviorPolicyAfter,
+          greedyPolicyBefore,
+          greedyPolicyAfter,
+          rewardTerms,
+          bootstrapState,
+          bootstrapAction,
+          bootstrapExponent,
+          naturalTerminal: tau + 1 === T && !truncated,
+          truncated,
         });
         time++;
       }
@@ -1497,7 +1561,12 @@ export function expectedSarsa(
       const target = result.reward + config.gamma * bootstrap;
       const tdError = target - q[state][action];
       const qBefore = copyQ(q);
+      const behaviorPolicyBefore = epsilonGreedyPolicy(q, epsilon);
+      const greedyPolicyBefore = greedyPolicy(q);
       q[state][action] += alpha * tdError;
+      const qAfter = copyQ(q);
+      const behaviorPolicyAfter = epsilonGreedyPolicy(qAfter, epsilon);
+      const greedyPolicyAfter = greedyPolicy(qAfter);
       updates.push({
         episode: ep,
         time,
@@ -1512,8 +1581,14 @@ export function expectedSarsa(
         tdError,
         newEstimate: q[state][action],
         qBefore,
-        qAfter: copyQ(q),
+        qAfter,
         behaviorPolicy: behaviorPolicy[state],
+        behaviorPolicyBefore,
+        behaviorPolicyAfter,
+        greedyPolicyBefore,
+        greedyPolicyAfter,
+        naturalTerminal: result.done,
+        truncated: false,
       });
       state = result.nextState;
       time++;
@@ -1583,6 +1658,8 @@ export function sarsaLambda(
       const target = result.reward + config.gamma * bootstrap;
       const delta = target - q[state][action];
       const qBefore = copyQ(q);
+      const behaviorPolicyBefore = epsilonGreedyPolicy(q, epsilon);
+      const greedyPolicyBefore = greedyPolicy(q);
 
       eligibility[state][action] += 1;
       for (let s = 0; s < numStates; s++) {
@@ -1591,6 +1668,10 @@ export function sarsaLambda(
           eligibility[s][a] *= config.gamma * lambda;
         }
       }
+
+      const qAfter = copyQ(q);
+      const behaviorPolicyAfter = epsilonGreedyPolicy(qAfter, epsilon);
+      const greedyPolicyAfter = greedyPolicy(qAfter);
 
       updates.push({
         episode: ep,
@@ -1606,9 +1687,15 @@ export function sarsaLambda(
         tdError: delta,
         newEstimate: q[state][action],
         qBefore,
-        qAfter: copyQ(q),
+        qAfter,
         nextAction,
-        behaviorPolicy: epsilonGreedyPolicy(q, epsilon, rng)[state],
+        behaviorPolicy: behaviorPolicyBefore[state],
+        behaviorPolicyBefore,
+        behaviorPolicyAfter,
+        greedyPolicyBefore,
+        greedyPolicyAfter,
+        naturalTerminal: result.done,
+        truncated: false,
       });
 
       if (result.done) break;
@@ -1678,6 +1765,10 @@ export function tdLambdaPrediction(
         valuesBefore,
         valuesAfter: copyV(v),
         behaviorPolicy: policy[state],
+        behaviorPolicyBefore: policy,
+        behaviorPolicyAfter: policy,
+        naturalTerminal: result.done,
+        truncated: false,
       });
       state = result.nextState;
       time++;

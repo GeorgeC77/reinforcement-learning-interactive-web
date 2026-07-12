@@ -68,7 +68,8 @@ const UNIFIED_ROWS: {
     onPolicy: 'on-policy',
     bootstrap: '是',
     steps: 'n',
-    mcRelation: 'n=∞ 时为 MC return',
+    mcRelation:
+      '在有限 episodic 任务中，当 n 覆盖到回合终点的全部剩余步数时，n-step return 等于 Monte Carlo return；continuing 或人工截断任务下不能无条件写成 n=∞ 即 MC。',
     dpRelation: 'n=1 时为 Sarsa',
   },
   {

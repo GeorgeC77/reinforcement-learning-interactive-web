@@ -18,7 +18,7 @@ import {
 } from './gridworld';
 import { mulberry32 } from './stochasticApproximation';
 
-const GOAL_POLICY: Action[] = [1, 2, 4, 1, 2, 4, 4, 1, 4];
+const GOAL_POLICY: Action[] = [1, 2, 2, 1, 2, 2, 1, 1, 4];
 
 function assert(cond: boolean, msg: string) {
   if (!cond) throw new Error(`Test failed: ${msg}`);
@@ -233,6 +233,65 @@ export function runGridWorldTests() {
     const sum = dist.reduce((acc, p) => acc + p, 0);
     assert(near(sum, 1, 1e-9), 'optimal policy should sum to 1');
   });
+
+  // 15. TD player index bounds
+  const oneUpdate = tdZeroPrediction(deterministicPolicy(GOAL_POLICY, 5), EPISODIC_PATH_CONFIG, 0.1, 1, 1, 1);
+  assert(oneUpdate.updates.length === 1, 'should produce exactly 1 update');
+  assert(oneUpdate.updates[0] !== undefined, 'update at index 0 should be defined');
+  const many = sarsa(EPISODIC_PATH_CONFIG, 0.1, 0.3, 'fixed', 5, 5, 1);
+  const maxIdx = Math.max(0, many.updates.length - 1);
+  assert(many.updates[maxIdx] !== undefined, `last update at index ${maxIdx} should be defined`);
+  assert(many.updates[many.updates.length] === undefined, 'index out of bounds should be undefined');
+
+  // 16. Goal policy reaches target from every non-terminal state
+  const goalPolicy = deterministicPolicy(GOAL_POLICY, 5);
+  for (let s = 0; s < 9; s++) {
+    if (s === EPISODIC_PATH_CONFIG.targetState || EPISODIC_PATH_CONFIG.forbiddenStates.includes(s)) continue;
+    let cur = s;
+    let reached = false;
+    for (let k = 0; k < 20; k++) {
+      if (cur === EPISODIC_PATH_CONFIG.targetState) {
+        reached = true;
+        break;
+      }
+      const a = goalPolicy[cur].findIndex((p) => p > 0.5);
+      const res = step(cur, a as Action, EPISODIC_PATH_CONFIG);
+      cur = res.nextState;
+    }
+    assert(reached, `goal policy should reach target from state ${s}`);
+  }
+
+  // 17. n-step target decomposition matches actual target
+  const ns3 = nStepSarsa(EPISODIC_PATH_CONFIG, 0.1, 0.3, 'fixed', 3, 20, 5, 11);
+  ns3.updates.forEach((u, i) => {
+    if (!u.rewardTerms) return;
+    let handTarget = 0;
+    u.rewardTerms.forEach((rew, k) => {
+      handTarget += Math.pow(EPISODIC_PATH_CONFIG.gamma, k) * rew;
+    });
+    if (u.bootstrapState !== undefined && u.bootstrapAction !== undefined && u.qBefore) {
+      handTarget += Math.pow(EPISODIC_PATH_CONFIG.gamma, u.rewardTerms.length) *
+        u.qBefore[u.bootstrapState][u.bootstrapAction];
+    }
+    assert(near(u.target, handTarget, 1e-9), `n-step target mismatch at update ${i}`);
+  });
+
+  // 18. Multi-optimal-action agreement: tie should not be penalized
+  // Construct a state where two actions share the same optimal value.
+  const qStar = Array.from({ length: 9 }, () => [1, 1, 0, 0, 0]);
+  const qLearned = Array.from({ length: 9 }, () => [1, 0.9, 0, 0, 0]);
+  // Manual agreement check: action 0 is in optimal set {0,1}.
+  const max0 = Math.max(...qLearned[0]);
+  const greedyActions = qLearned[0]
+    .map((v, a) => ({ v, a }))
+    .filter(({ v }) => Math.abs(v - max0) <= 1e-6)
+    .map(({ a }) => a);
+  const maxStar = Math.max(...qStar[0]);
+  const optimalActions = qStar[0]
+    .map((v, a) => ({ v, a }))
+    .filter(({ v }) => Math.abs(v - maxStar) <= 1e-6)
+    .map(({ a }) => a);
+  assert(greedyActions.some((a) => optimalActions.includes(a)), 'greedy action should belong to optimal set');
 
   console.log('All gridworld tests passed.');
 }
