@@ -17,11 +17,9 @@ import {
   rewardForAction,
   sampleActionWithRng,
   solveStateValues,
+  computeQValues,
   isTerminal,
 } from './gridworld';
-import { stationaryDistribution } from './fa';
-
-export { stationaryDistribution };
 
 // ---------------------------------------------------------------------------
 // Feature constructors for the policy network h_theta(s,a) = theta_a^T phi(s)
@@ -111,7 +109,7 @@ export function softmaxScoreGradient(policy: number[], action: number): number[]
 
 /**
  * Feature-based score: ∂ log π(a|s) / ∂ theta_a' = phi(s) * (1{a'=a} - π(a'|s)).
- * Returns a matrix [action][feature].
+ * Returns a matrix [parameterAction][feature].
  */
 export function softmaxScoreGradientFeature(
   policy: number[],
@@ -132,19 +130,27 @@ export function expectedScoreZero(policy: number[]): number[] {
 
 /**
  * Verify that Σ_a π(a|s) ∇log π(a|s) = 0 (feature-based case).
- * Returns a vector of length featureDim.
+ * Returns a matrix [parameterAction][feature].
  */
-export function expectedScoreZeroFeature(policy: number[], phi: number[]): number[] {
-  const dim = phi.length;
-  const result = new Array(dim).fill(0);
-  for (let a = 0; a < policy.length; a++) {
-    const score = softmaxScoreGradientFeature(policy, a, phi);
-    for (let a2 = 0; a2 < policy.length; a2++) {
-      for (let i = 0; i < dim; i++) {
-        result[i] += policy[a] * score[a2][i];
+export function expectedScoreZeroFeature(
+  policy: number[],
+  phi: number[]
+): number[][] {
+  const numActions = policy.length;
+  const result = Array.from(
+    { length: numActions },
+    () => new Array(phi.length).fill(0)
+  );
+
+  for (let sampledAction = 0; sampledAction < numActions; sampledAction++) {
+    const score = softmaxScoreGradientFeature(policy, sampledAction, phi);
+    for (let parameterAction = 0; parameterAction < numActions; parameterAction++) {
+      for (let j = 0; j < phi.length; j++) {
+        result[parameterAction][j] += policy[sampledAction] * score[parameterAction][j];
       }
     }
   }
+
   return result;
 }
 
@@ -344,7 +350,9 @@ export interface MDPStepDetail {
   action: Action;
   reward: number;
   behaviorProb: number;
-  updateProb: number;
+  updateProbBefore: number;
+  updateProbAfter: number;
+  deltaProbability: number;
   returnGt: number;
   scoreGradient: number[][];
   weightedGradient: number[][];
@@ -376,9 +384,12 @@ export interface PGUpdateRecord {
   thetaBefore: number[][];
   thetaAfter: number[][];
   behaviorPolicy: Policy;
-  updatePolicy: Policy;
+  policyBeforeUpdate: Policy;
+  policyAfterUpdate: Policy;
   behaviorProb: number;
-  updateProb: number;
+  updateProbBefore: number;
+  updateProbAfter: number;
+  deltaProbability: number;
   scoreGradient: number[][];
   weightedGradient: number[][];
   parameterDelta: number[][];
@@ -471,11 +482,14 @@ export function reinforceMDP(
     for (let t = 0; t < trajectory.length; t++) {
       const { state: s, action: a, reward: r, nextState: ns, done } = trajectory[t];
       const behaviorPolicy = behaviorPolicies[t];
-      const updatePolicy = policyTable(theta, featureMode, config);
       const behaviorProb = behaviorPolicy[s][a];
-      const updateProb = updatePolicy[s][a];
+
+      const thetaBefore = theta.map((row) => [...row]);
+      const policyBeforeUpdate = policyTable(thetaBefore, featureMode, config);
+      const updateProbBefore = policyBeforeUpdate[s][a];
+
       const phi = stateFeatures(s, featureMode, config);
-      const score = softmaxScoreGradientFeature(updatePolicy[s], a, phi);
+      const score = softmaxScoreGradientFeature(policyBeforeUpdate[s], a, phi);
 
       const baselineBefore = baseline[s];
       const advantage = useBaseline ? returns[t] - baselineBefore : undefined;
@@ -493,12 +507,19 @@ export function reinforceMDP(
         baseline[s] += beta * (returns[t] - baselineBefore);
       }
 
+      const thetaAfter = theta.map((row) => [...row]);
+      const policyAfterUpdate = policyTable(thetaAfter, featureMode, config);
+      const updateProbAfter = policyAfterUpdate[s][a];
+      const deltaProbability = updateProbAfter - updateProbBefore;
+
       stepDetails.push({
         state: s,
         action: a,
         reward: r,
         behaviorProb,
-        updateProb,
+        updateProbBefore,
+        updateProbAfter,
+        deltaProbability,
         returnGt: returns[t],
         scoreGradient: score,
         weightedGradient: weighted,
@@ -517,14 +538,15 @@ export function reinforceMDP(
         nextState: ns,
         done,
         returnGt: returns[t],
-        thetaBefore: theta.map((row, actionIdx) =>
-          row.map((v, i) => (delta[actionIdx] ? v - delta[actionIdx][i] : v))
-        ),
-        thetaAfter: theta.map((row) => [...row]),
+        thetaBefore,
+        thetaAfter,
         behaviorPolicy,
-        updatePolicy,
+        policyBeforeUpdate,
+        policyAfterUpdate,
         behaviorProb,
-        updateProb,
+        updateProbBefore,
+        updateProbAfter,
+        deltaProbability,
         scoreGradient: score,
         weightedGradient: weighted,
         parameterDelta: delta,
@@ -569,13 +591,60 @@ export function expectedImmediateReward(
   return policyState.reduce((sum, p, a) => sum + p * rewardForAction(state, a as Action, config), 0);
 }
 
+export interface StationaryDistributionResult {
+  d: number[];
+  residual: number;
+  converged: boolean;
+  iterations: number;
+}
+
+export function computeStationaryDistribution(
+  policy: Policy,
+  config: GridWorldConfig,
+  maxIter = 5000,
+  tol = 1e-10
+): StationaryDistributionResult {
+  const numStates = config.rows * config.cols;
+  let d = new Array(numStates).fill(1 / numStates);
+  let residual = Infinity;
+  let converged = false;
+  let iterations = 0;
+
+  for (let it = 0; it < maxIter; it++) {
+    iterations = it + 1;
+    const next = new Array(numStates).fill(0);
+    for (let s = 0; s < numStates; s++) {
+      for (let a = 0; a < 5; a++) {
+        const result = step(s, a as Action, config);
+        next[result.nextState] += d[s] * policy[s][a];
+      }
+    }
+    const sum = next.reduce((acc, v) => acc + v, 0);
+    if (sum === 0) break;
+    const norm = next.map((v) => v / sum);
+    residual = Math.max(...norm.map((v, i) => Math.abs(v - d[i])));
+    d = norm;
+    if (residual < tol) {
+      converged = true;
+      break;
+    }
+  }
+
+  return { d, residual, converged, iterations };
+}
+
 export interface PolicyMetrics {
   vPi: StateValues;
   rPi: number[];
   dPi: number[];
+  d0: number[];
   Jv0: number;
   Jv: number;
   Jr: number;
+  relationResidual: number;
+  stationaryResidual: number;
+  stationaryConverged: boolean;
+  stationaryIterations: number;
   policy: Policy;
 }
 
@@ -588,13 +657,350 @@ export function computePolicyMetrics(
   const policy = policyTable(theta, featureMode, config);
   const vPi = solveStateValues(policy, config);
   const rPi = policy.map((dist, s) => expectedImmediateReward(s, dist, config));
-  const dPi = stationaryDistribution(policy, config, 2000);
+  const { d, residual, converged, iterations } = computeStationaryDistribution(policy, config);
 
-  const Jv0 = d0.reduce((sum, d, s) => sum + d * vPi[s], 0);
-  const Jv = dPi.reduce((sum, d, s) => sum + d * vPi[s], 0);
-  const Jr = dPi.reduce((sum, d, s) => sum + d * rPi[s], 0);
+  const Jv0 = d0.reduce((sum, dVal, s) => sum + dVal * vPi[s], 0);
+  const Jv = d.reduce((sum, dVal, s) => sum + dVal * vPi[s], 0);
+  const Jr = d.reduce((sum, dVal, s) => sum + dVal * rPi[s], 0);
+  const relationResidual = Math.abs(Jr - (1 - config.gamma) * Jv);
 
-  return { vPi, rPi, dPi, Jv0, Jv, Jr, policy };
+  return {
+    vPi,
+    rPi,
+    dPi: d,
+    d0,
+    Jv0,
+    Jv,
+    Jr,
+    relationResidual,
+    stationaryResidual: residual,
+    stationaryConverged: converged,
+    stationaryIterations: iterations,
+    policy,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Exact discounted policy-gradient checker (Theorem 9.2)
+// ---------------------------------------------------------------------------
+
+export function computeTransitionMatrix(
+  policy: Policy,
+  config: GridWorldConfig
+): number[][] {
+  const numStates = config.rows * config.cols;
+  const P: number[][] = Array.from({ length: numStates }, () => new Array(numStates).fill(0));
+  for (let s = 0; s < numStates; s++) {
+    for (let a = 0; a < 5; a++) {
+      const result = step(s, a as Action, config);
+      P[result.nextState][s] += policy[s][a];
+    }
+  }
+  return P;
+}
+
+/**
+ * Discounted occupancy measure ρ_π (unnormalized).
+ * Solves ρ = d0 + γ P^T ρ, where sum(ρ) = 1/(1-γ) when sum(d0)=1.
+ */
+export function computeDiscountOccupancy(
+  policy: Policy,
+  config: GridWorldConfig,
+  d0: number[],
+  gamma: number,
+  maxIter = 5000,
+  tol = 1e-12
+): number[] {
+  const P = computeTransitionMatrix(policy, config);
+  const numStates = P.length;
+  let rho = [...d0];
+  for (let it = 0; it < maxIter; it++) {
+    const next = new Array(numStates).fill(0);
+    for (let s = 0; s < numStates; s++) {
+      let acc = d0[s];
+      for (let sp = 0; sp < numStates; sp++) {
+        acc += gamma * P[s][sp] * rho[sp];
+      }
+      next[s] = acc;
+    }
+    const diff = Math.max(...next.map((v, i) => Math.abs(v - rho[i])));
+    rho = next;
+    if (diff < tol) break;
+  }
+  return rho;
+}
+
+/**
+ * Exact gradient of J(θ) = Σ_s d0(s) v_π(s) for one-hot softmax policy.
+ * Returns the gradient component for a single (parameterAction, parameterState).
+ */
+export function exactDiscountGradientComponent(
+  theta: number[][],
+  config: GridWorldConfig,
+  d0: number[],
+  gamma: number,
+  parameterAction: number,
+  parameterState: number
+): number {
+  const policy = policyTable(theta, 'onehot', config);
+  const vPi = solveStateValues(policy, config);
+  const qPi = computeQValues(vPi, config);
+  const rho = computeDiscountOccupancy(policy, config, d0, gamma);
+  const s = parameterState;
+  const a = parameterAction;
+  const piA = policy[s][a];
+  const vS = vPi[s];
+  const qA = qPi[s][a];
+  // ∂J/∂θ_{a,s} = ρ(s) π(a|s) (q(s,a) - v(s))
+  return rho[s] * piA * (qA - vS);
+}
+
+export function finiteDifferenceGradientComponent(
+  theta: number[][],
+  config: GridWorldConfig,
+  d0: number[],
+  gamma: number,
+  parameterAction: number,
+  parameterState: number,
+  eps = 1e-4
+): number {
+  function objective(th: number[][]) {
+    const pol = policyTable(th, 'onehot', config);
+    const vals = solveStateValues(pol, config);
+    return d0.reduce((sum, dVal, s) => sum + dVal * vals[s], 0);
+  }
+
+  const thetaPlus = theta.map((row, a) =>
+    row.map((v, s) => (a === parameterAction && s === parameterState ? v + eps : v))
+  );
+  const thetaMinus = theta.map((row, a) =>
+    row.map((v, s) => (a === parameterAction && s === parameterState ? v - eps : v))
+  );
+  return (objective(thetaPlus) - objective(thetaMinus)) / (2 * eps);
+}
+
+export function stationaryApproxGradientComponent(
+  theta: number[][],
+  config: GridWorldConfig,
+  gamma: number,
+  parameterAction: number,
+  parameterState: number
+): number {
+  const policy = policyTable(theta, 'onehot', config);
+  const vPi = solveStateValues(policy, config);
+  const qPi = computeQValues(vPi, config);
+  const { d } = computeStationaryDistribution(policy, config);
+  const s = parameterState;
+  const a = parameterAction;
+  // ∇v̄_π ≈ (1/(1-γ)) E_{S~dπ}[Σ_a π(a|s) ∇logπ(a|s) q(s,a)]
+  return (1 / (1 - gamma)) * d[s] * policy[s][a] * (qPi[s][a] - vPi[s]);
+}
+
+export interface DiscountGradientCheckResult {
+  finiteDifference: number;
+  exact: number;
+  stationaryApprox: number;
+  exactError: number;
+  stationaryError: number;
+  rhoSum: number;
+  expectedRhoSum: number;
+}
+
+export function checkDiscountGradientComponent(
+  theta: number[][],
+  config: GridWorldConfig,
+  d0: number[],
+  gamma: number,
+  parameterAction: number,
+  parameterState: number,
+  eps = 1e-4
+): DiscountGradientCheckResult {
+  const finiteDifference = finiteDifferenceGradientComponent(
+    theta,
+    config,
+    d0,
+    gamma,
+    parameterAction,
+    parameterState,
+    eps
+  );
+  const exact = exactDiscountGradientComponent(
+    theta,
+    config,
+    d0,
+    gamma,
+    parameterAction,
+    parameterState
+  );
+  const stationaryApprox = stationaryApproxGradientComponent(
+    theta,
+    config,
+    gamma,
+    parameterAction,
+    parameterState
+  );
+  const policy = policyTable(theta, 'onehot', config);
+  const rho = computeDiscountOccupancy(policy, config, d0, gamma);
+  return {
+    finiteDifference,
+    exact,
+    stationaryApprox,
+    exactError: Math.abs(finiteDifference - exact),
+    stationaryError: Math.abs(finiteDifference - stationaryApprox),
+    rhoSum: rho.reduce((s, v) => s + v, 0),
+    expectedRhoSum: 1 / (1 - gamma),
+  };
+}
+
+export function checkDiscountGradientOverGamma(
+  theta: number[][],
+  config: GridWorldConfig,
+  d0: number[],
+  parameterAction: number,
+  parameterState: number,
+  gammas: number[]
+): {
+  gamma: number;
+  exactError: number;
+  stationaryError: number;
+}[] {
+  return gammas.map((gamma) => {
+    const check = checkDiscountGradientComponent(
+      theta,
+      config,
+      d0,
+      gamma,
+      parameterAction,
+      parameterState
+    );
+    return { gamma, exactError: check.exactError, stationaryError: check.stationaryError };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Average-reward / differential value metrics
+// ---------------------------------------------------------------------------
+
+export interface AverageRewardMetrics {
+  rBar: number;
+  dPi: number[];
+  differentialV: number[];
+  differentialQ: number[][];
+  poissonResidual: number;
+  ordinaryCumulative: number[];
+  differentialCumulative: number[];
+}
+
+function solveLinearSystem(a: number[][], b: number[]): number[] | null {
+  const n = a.length;
+  if (n === 0) return null;
+  const aug = a.map((row, i) => [...row, b[i]]);
+
+  for (let i = 0; i < n; i++) {
+    let pivot = aug[i][i];
+    let pivotRow = i;
+    for (let r = i + 1; r < n; r++) {
+      if (Math.abs(aug[r][i]) > Math.abs(pivot)) {
+        pivot = aug[r][i];
+        pivotRow = r;
+      }
+    }
+    if (Math.abs(pivot) < 1e-12) return null;
+    if (pivotRow !== i) {
+      [aug[i], aug[pivotRow]] = [aug[pivotRow], aug[i]];
+    }
+    for (let j = 0; j <= n; j++) {
+      aug[i][j] /= pivot;
+    }
+    for (let r = 0; r < n; r++) {
+      if (r === i) continue;
+      const factor = aug[r][i];
+      for (let j = 0; j <= n; j++) {
+        aug[r][j] -= factor * aug[i][j];
+      }
+    }
+  }
+
+  return aug.map((row) => row[n]);
+}
+
+export function computeAverageRewardMetrics(
+  policy: Policy,
+  config: GridWorldConfig,
+  horizon = 50
+): AverageRewardMetrics {
+  const numStates = config.rows * config.cols;
+  const rPi = policy.map((dist, s) => expectedImmediateReward(s, dist, config));
+  const { d } = computeStationaryDistribution(policy, config);
+  const rBar = d.reduce((sum, ds, s) => sum + ds * rPi[s], 0);
+
+  // Poisson equation: (I - P^T) v = r - rBar 1, with d^T v = 0.
+  const P = computeTransitionMatrix(policy, config);
+  const A: number[][] = Array.from({ length: numStates + 1 }, () =>
+    new Array(numStates + 1).fill(0)
+  );
+  const B: number[] = new Array(numStates + 1).fill(0);
+  for (let s = 0; s < numStates; s++) {
+    A[s][s] = 1;
+    for (let sp = 0; sp < numStates; sp++) {
+      A[s][sp] -= P[sp][s];
+    }
+    B[s] = rPi[s] - rBar;
+  }
+  for (let s = 0; s < numStates; s++) {
+    A[numStates][s] = d[s];
+  }
+  B[numStates] = 0;
+
+  const solution = solveLinearSystem(A, B);
+  const differentialV = solution ? solution.slice(0, numStates) : new Array(numStates).fill(0);
+
+  const differentialQ: number[][] = Array.from({ length: numStates }, () => new Array(5).fill(0));
+  for (let s = 0; s < numStates; s++) {
+    for (let a = 0; a < 5; a++) {
+      const result = step(s, a as Action, config);
+      const nextV = result.done ? 0 : differentialV[result.nextState];
+      differentialQ[s][a] = result.reward - rBar + nextV;
+    }
+  }
+
+  const Pv = new Array(numStates).fill(0);
+  for (let s = 0; s < numStates; s++) {
+    for (let sp = 0; sp < numStates; sp++) {
+      Pv[s] += P[sp][s] * differentialV[sp];
+    }
+  }
+  const poissonResidual = Math.max(
+    ...differentialV.map((v, s) => Math.abs(v - Pv[s] - (rPi[s] - rBar)))
+  );
+
+  // Simulate one trajectory from start for ordinary vs differential cumulative rewards.
+  const rng = mulberry32(1); // fixed seed for illustration
+  let state = config.startState;
+  const ordinaryCumulative: number[] = [];
+  const differentialCumulative: number[] = [];
+  let ordinarySum = 0;
+  let differentialSum = 0;
+  for (let t = 0; t < horizon; t++) {
+    const action = sampleActionWithRng(policy[state], rng);
+    const result = step(state, action, config);
+    ordinarySum += result.reward;
+    differentialSum += result.reward - rBar;
+    ordinaryCumulative.push(ordinarySum);
+    differentialCumulative.push(differentialSum);
+    state = result.nextState;
+    if (result.done) break;
+  }
+
+  return {
+    rBar,
+    dPi: d,
+    differentialV,
+    differentialQ,
+    poissonResidual,
+    ordinaryCumulative,
+    differentialCumulative,
+  };
 }
 
 // ---------------------------------------------------------------------------

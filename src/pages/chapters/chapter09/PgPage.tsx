@@ -38,6 +38,9 @@ import {
   reinforceMDP,
   computePolicyMetrics,
   compareBaselineVariance,
+  checkDiscountGradientComponent,
+  checkDiscountGradientOverGamma,
+  computeAverageRewardMetrics,
   type PGFeatureMode,
   type PGUpdateRecord,
   type MDPEpisode,
@@ -177,7 +180,7 @@ export default function Chapter09PgPage() {
               content: (
                 <ul className="list-disc pl-5 space-y-2">
                   <li>策略函数用 θ_a^T φ(s) 把状态特征映射为动作偏好，再经 softmax 得到概率。</li>
-                  <li>softmax 具有常数平移不变性；score function 为 φ(s)(e_A - π(·|s))。</li>
+                  <li>softmax 具有常数平移不变性；score function 为 φ(s)(e_A − π(·|s))。</li>
                   <li>策略目标分折扣（fixed d0 / discounted occupancy / stationary metric）与平均奖励两种情形。</li>
                   <li>REINFORCE 用完整轨迹的折扣回报 G_t 加权 score function 更新 θ。</li>
                   <li>基线必须不依赖当前动作；它不改变期望梯度，但适当选取可降低方差。</li>
@@ -211,11 +214,16 @@ function PolicyFunctionDemo() {
   const [theta, setTheta] = useState<number[][]>(() => zeroThetaForMode('coordinate', config));
   const [selectedState, setSelectedState] = useState(0);
   const [selectedAction, setSelectedAction] = useState<number | null>(null);
+  const [selectedParam, setSelectedParam] = useState<{ action: number; feature: number }>({
+    action: 0,
+    feature: 0,
+  });
+  const [deltaTheta, setDeltaTheta] = useState(0.5);
   const [shift, setShift] = useState(0);
 
-  // Reset theta shape when feature mode changes, keeping existing values where dimensions match.
   function handleFeatureModeChange(mode: PGFeatureMode) {
     setFeatureMode(mode);
+    setSelectedParam({ action: 0, feature: 0 });
     setTheta((prev) => {
       const fdim = featureDim(mode, config);
       return Array.from({ length: 5 }, (_, a) =>
@@ -236,17 +244,27 @@ function PolicyFunctionDemo() {
   }
 
   const affectedStates = useMemo(() => {
-    if (featureMode === 'onehot') {
-      // In one-hot mode feature index == state index.
-      return [selectedState];
-    }
     const states: number[] = [];
     for (let s = 0; s < numStates; s++) {
       const f = stateFeatures(s, featureMode, config);
-      if (f.some((v) => Math.abs(v) > 1e-9)) states.push(s);
+      if (Math.abs(f[selectedParam.feature]) > 1e-9) states.push(s);
     }
     return states;
-  }, [selectedState, featureMode, config, numStates]);
+  }, [selectedParam.feature, featureMode, config, numStates]);
+
+  const deltaLogits = useMemo(() => {
+    return affectedStates.map((s) => {
+      const f = stateFeatures(s, featureMode, config);
+      const delta = deltaTheta * f[selectedParam.feature];
+      const before = policyPreferences(theta, s, featureMode, config)[selectedParam.action];
+      return {
+        state: s,
+        delta,
+        before,
+        after: before + delta,
+      };
+    });
+  }, [affectedStates, deltaTheta, selectedParam, theta, featureMode, config]);
 
   return (
     <InteractiveDemo title="9.1 从策略表到策略函数">
@@ -265,7 +283,7 @@ function PolicyFunctionDemo() {
                 onCellClick={setSelectedState}
                 className="max-w-full"
               />
-              <p className="mt-2 text-xs text-gray-600">点击格子选择要inspect的状态。</p>
+              <p className="mt-2 text-xs text-gray-600">点击格子选择要 inspect 的状态。</p>
             </CardContent>
           </Card>
 
@@ -363,18 +381,26 @@ function PolicyFunctionDemo() {
                   <div key={a}>
                     <div className="text-xs font-semibold text-gray-700 mb-1">{ACTION_NAMES[a]}</div>
                     <div className="grid grid-cols-3 gap-2">
-                      {row.map((v, i) => (
-                        <div key={i} className="flex flex-col">
-                          <span className="text-[10px] text-gray-500">{featureLabel(featureMode, i)}</span>
-                          <input
-                            type="number"
-                            step={0.1}
-                            value={v.toFixed(2)}
-                            onChange={(e) => updateTheta(a, i, parseFloat(e.target.value) || 0)}
-                            className="w-full px-1 py-1 text-center border rounded text-sm"
-                          />
-                        </div>
-                      ))}
+                      {row.map((v, i) => {
+                        const active = selectedParam.action === a && selectedParam.feature === i;
+                        return (
+                          <div
+                            key={i}
+                            className={`flex flex-col rounded p-1 ${active ? 'bg-blue-50 border border-blue-200' : ''}`}
+                            onFocus={() => setSelectedParam({ action: a, feature: i })}
+                          >
+                            <span className="text-[10px] text-gray-500">{featureLabel(featureMode, i)}</span>
+                            <input
+                              type="number"
+                              step={0.1}
+                              value={v.toFixed(2)}
+                              onChange={(e) => updateTheta(a, i, parseFloat(e.target.value) || 0)}
+                              onFocus={() => setSelectedParam({ action: a, feature: i })}
+                              className="w-full px-1 py-1 text-center border rounded text-sm"
+                            />
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 ))}
@@ -387,14 +413,6 @@ function PolicyFunctionDemo() {
               >
                 重置 θ = 0
               </Button>
-              <div className="text-xs text-gray-600">
-                修改 θ 后，右侧策略表会实时更新。
-                {featureMode === 'onehot' ? (
-                  <> 每个参数只影响对应状态。</>
-                ) : (
-                  <> 共享特征会影响多个状态。</>
-                )}
-              </div>
             </CardContent>
           </Card>
 
@@ -402,9 +420,17 @@ function PolicyFunctionDemo() {
             <CardHeader className="pb-2">
               <CardTitle className="text-base">参数影响范围</CardTitle>
             </CardHeader>
-            <CardContent>
-              <div className="text-sm text-gray-700 mb-2">当前特征模式会影响以下状态：</div>
-              <div className="flex flex-wrap gap-1">
+            <CardContent className="space-y-3">
+              <div className="text-sm text-gray-700">
+                当前参数：<span className="font-semibold">{ACTION_NAMES[selectedParam.action]}</span> ×{' '}
+                <span className="font-semibold">{featureLabel(featureMode, selectedParam.feature)}</span>
+              </div>
+              <div>
+                <div className="text-sm text-gray-600 mb-1">假设改变量 Δθ</div>
+                {paramSlider(deltaTheta, setDeltaTheta, -2, 2, 0.1, 1)}
+              </div>
+              <div className="text-sm text-gray-700 mb-1">受影响状态（|φ_j(s)| &gt; 0）：</div>
+              <div className="flex flex-wrap gap-1 mb-2">
                 {affectedStates.map((s) => (
                   <span
                     key={s}
@@ -413,6 +439,33 @@ function PolicyFunctionDemo() {
                     s{s + 1}
                   </span>
                 ))}
+              </div>
+              <div className="text-xs text-gray-600">
+                Δlogit(s, a) = Δθ(a,j) · φ_j(s)。下表展示对 {ACTION_NAMES[selectedParam.action]} 的 logit 影响：
+              </div>
+              <div className="max-h-40 overflow-y-auto text-xs">
+                <table className="w-full text-left">
+                  <thead className="text-gray-500 border-b">
+                    <tr>
+                      <th>状态</th>
+                      <th>φ_j(s)</th>
+                      <th>Δlogit</th>
+                      <th>logit 前</th>
+                      <th>logit 后</th>
+                    </tr>
+                  </thead>
+                  <tbody className="text-gray-700">
+                    {deltaLogits.map((d) => (
+                      <tr key={d.state} className="border-b last:border-0">
+                        <td>s{d.state + 1}</td>
+                        <td className="font-mono">{stateFeatures(d.state, featureMode, config)[selectedParam.feature].toFixed(3)}</td>
+                        <td className="font-mono">{d.delta.toFixed(3)}</td>
+                        <td className="font-mono">{d.before.toFixed(3)}</td>
+                        <td className="font-mono">{d.after.toFixed(3)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </CardContent>
           </Card>
@@ -460,7 +513,6 @@ function MetricsDemo() {
   const [d0Mode, setD0Mode] = useState<D0Mode>('uniform');
   const [customD0, setCustomD0] = useState<number[]>(new Array(numStates).fill(1 / numStates));
 
-  // Reset theta when feature mode changes, and apply deterministic presets only for one-hot.
   function handleFeatureModeChange(mode: PGFeatureMode) {
     setFeatureMode(mode);
     setTheta(uniformThetaForMode(mode, config));
@@ -483,14 +535,30 @@ function MetricsDemo() {
 
   const metrics = useMemo(() => computePolicyMetrics(theta, config, d0, featureMode), [theta, config, d0, featureMode]);
 
-  const chartData = useMemo(
+  const valueRewardData = useMemo(
     () =>
       metrics.vPi.map((v, s) => ({
         state: `s${s + 1}`,
         vPi: v,
         rPi: metrics.rPi[s],
+      })),
+    [metrics]
+  );
+
+  const distributionData = useMemo(
+    () =>
+      metrics.vPi.map((v, s) => ({
+        state: `s${s + 1}`,
         d0: d0[s],
         dPi: metrics.dPi[s],
+      })),
+    [metrics, d0]
+  );
+
+  const contributionData = useMemo(
+    () =>
+      metrics.vPi.map((v, s) => ({
+        state: `s${s + 1}`,
         contribV0: d0[s] * v,
         contribV: metrics.dPi[s] * v,
         contribR: metrics.dPi[s] * metrics.rPi[s],
@@ -508,34 +576,74 @@ function MetricsDemo() {
             <MetricCard title="r̄_π" formula="Σ_s d_π(s) r_π(s)" value={metrics.Jr} />
           </div>
 
-          <div className="bg-gray-50 rounded-xl p-4 border border-gray-200">
-            <LineChart
-              data={chartData}
-              xKey="state"
-              xLabel="状态"
-              yLabel="数值"
-              series={[
-                { key: 'vPi', name: 'v_π(s)', color: '#2563eb' },
-                { key: 'rPi', name: 'r_π(s)', color: '#ef4444' },
-                { key: 'd0', name: 'd0(s)', color: '#22c55e' },
-                { key: 'dPi', name: 'd_π(s)', color: '#f59e0b' },
-              ]}
-              height={240}
-            />
+          <div className="grid gap-4">
+            <div className="bg-gray-50 rounded-xl p-4 border border-gray-200">
+              <LineChart
+                data={valueRewardData}
+                xKey="state"
+                xLabel="状态"
+                yLabel="数值"
+                series={[
+                  { key: 'vPi', name: 'v_π(s)', color: '#2563eb' },
+                  { key: 'rPi', name: 'r_π(s)', color: '#ef4444' },
+                ]}
+                height={200}
+              />
+            </div>
+            <div className="bg-gray-50 rounded-xl p-4 border border-gray-200">
+              <LineChart
+                data={distributionData}
+                xKey="state"
+                xLabel="状态"
+                yLabel="概率"
+                series={[
+                  { key: 'd0', name: 'd0(s)', color: '#22c55e' },
+                  { key: 'dPi', name: 'd_π(s)', color: '#f59e0b' },
+                ]}
+                height={200}
+              />
+            </div>
+            <div className="bg-gray-50 rounded-xl p-4 border border-gray-200">
+              <LineChart
+                data={contributionData}
+                xKey="state"
+                xLabel="状态"
+                yLabel="贡献"
+                series={[
+                  { key: 'contribV0', name: 'd0·v', color: '#2563eb' },
+                  { key: 'contribV', name: 'dπ·v', color: '#8b5cf6' },
+                  { key: 'contribR', name: 'dπ·r', color: '#ef4444' },
+                ]}
+                height={200}
+              />
+            </div>
           </div>
 
           <div className="bg-blue-50 rounded-xl p-4 border border-blue-100 text-sm text-gray-700 space-y-2">
             <p>
-              <strong>v̄_π^0</strong> 使用指定的初始分布 d0，对应固定起点的 episodic 目标。
+              <strong>v̄_π^0</strong> 对应从策略无关的初始分布 d0 出发的折扣价值目标。固定起点是 d0 为单点分布的特例；该定义不要求任务必须 episodic。
             </p>
             <p>
               <strong>v̄_π</strong> 与 <strong>r̄_π</strong> 使用策略的 stationary distribution d_π（通过转移矩阵迭代求得，不是经验访问频率）。
             </p>
             <p>
-              在折扣 stationary 指标下，教材给出近似关系
-              <KaTeX math={String.raw`\bar{r}_\pi \approx (1-\gamma) \bar{v}_\pi`} display={false} />
-              ；当前 v̄_π={metrics.Jv.toFixed(3)}, r̄_π={metrics.Jr.toFixed(3)}。
+              在折扣 stationary metric 下，
+              <KaTeX math={String.raw`\bar{r}_\pi = (1-\gamma) \bar{v}_\pi`} display={false} />
+              是严格等式。当前 v̄_π={metrics.Jv.toFixed(3)}, r̄_π={metrics.Jr.toFixed(3)}, residual={metrics.relationResidual.toExponential(2)}。
             </p>
+            <p>
+              真正属于近似的是：
+              <KaTeX
+                math={String.raw`\nabla \bar{v}_\pi \approx \frac{1}{1-\gamma} \mathbb{E}_{S\sim d_\pi, A\sim\pi}\left[\nabla\log\pi(A|S)\, q_\pi(S,A)\right]`}
+                display={false}
+              />
+              ，以及相应的 ∇r̄_π 表达式。
+            </p>
+            {!metrics.stationaryConverged && (
+              <p className="text-amber-700">
+                警告：stationary distribution 未收敛（residual={metrics.stationaryResidual.toExponential(2)}，iterations={metrics.stationaryIterations}），d_π 相关指标可能不可靠。
+              </p>
+            )}
           </div>
         </div>
 
@@ -649,6 +757,44 @@ function MetricCard({ title, formula, value }: { title: string; formula: string;
 
 // ------------------- 9.3 Discounted Policy Gradient Theorem -------------------
 function DiscountedPGDemo() {
+  const config = DEFAULT_CONFIG;
+  const numStates = config.rows * config.cols;
+  const [theta, setTheta] = useState<number[][]>(() => buildPresetTheta('goal', 'onehot', config));
+  const [d0Mode, setD0Mode] = useState<D0Mode>('uniform');
+  const [customD0, setCustomD0] = useState<number[]>(new Array(numStates).fill(1 / numStates));
+  const [parameterAction, setParameterAction] = useState(1);
+  const [parameterState, setParameterState] = useState(3);
+  const [gamma, setGamma] = useState(config.gamma);
+
+  const d0 = useMemo(() => {
+    if (d0Mode === 'uniform') return new Array(numStates).fill(1 / numStates);
+    if (d0Mode === 'start') {
+      const arr = new Array(numStates).fill(0);
+      arr[config.startState] = 1;
+      return arr;
+    }
+    const s = customD0.reduce((acc, v) => acc + v, 0);
+    return s === 0 ? customD0.map(() => 1 / numStates) : customD0.map((v) => v / s);
+  }, [d0Mode, customD0, numStates, config.startState]);
+
+  const check = useMemo(
+    () => checkDiscountGradientComponent(theta, config, d0, gamma, parameterAction, parameterState),
+    [theta, config, d0, gamma, parameterAction, parameterState]
+  );
+
+  const gammaErrors = useMemo(
+    () => checkDiscountGradientOverGamma(theta, config, d0, parameterAction, parameterState, [0.5, 0.7, 0.9, 0.95, 0.99]),
+    [theta, config, d0, parameterAction, parameterState]
+  );
+
+  function updateTheta(action: number, state: number, value: number) {
+    setTheta((prev) =>
+      prev.map((row, a) =>
+        row.map((v, s) => (a === action && s === state ? value : v))
+      )
+    );
+  }
+
   return (
     <InteractiveDemo title="9.3 折扣情形的策略梯度定理">
       <div className="space-y-4">
@@ -672,22 +818,148 @@ function DiscountedPGDemo() {
                 math={String.raw`\eta(s') = \rho_\pi(s') = \sum_s d_0(s) \sum_{k=0}^\infty \gamma^k \Pr(S_k=s'\mid S_0=s)`}
                 display
               />
-              <p>这是严格等式：η 是从 d0 出发的折扣占用度量。</p>
+              <p>这是严格等式：η 是从 d0 出发的未归一化折扣占用度量。</p>
+              <KaTeX math={String.raw`\sum_{s'} \rho_\pi(s') = \frac{1}{1-\gamma}`} display={false} />
             </CardContent>
           </Card>
           <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-base">B. 折扣 stationary 指标</CardTitle></CardHeader>
+            <CardHeader className="pb-2"><CardTitle className="text-base">B. 折扣 stationary 指标与近似</CardTitle></CardHeader>
             <CardContent className="text-sm text-gray-700 space-y-2">
               <KaTeX math={String.raw`\bar{v}_\pi = \sum_s d_\pi(s) v_\pi(s), \quad \bar{r}_\pi = \sum_s d_\pi(s) r_\pi(s)`} display />
-              <KaTeX math={String.raw`\nabla_\theta \bar{v}_\pi \approx \mathbb{E}_{S\sim d_\pi}\bigl[\cdots\bigr]`} display />
               <p>
-                教材中常把 d_π 形式写成近似关系。γ 越接近 1，用 d_π 代替 ρ_π 的近似通常越准确，但它不是严格等式。
+                指标之间有严格等式：
+                <KaTeX math={String.raw`\bar{r}_\pi = (1-\gamma) \bar{v}_\pi`} display={false} />
+                。
+              </p>
+              <p>
+                近似的是策略梯度表达式：
+                <KaTeX
+                  math={String.raw`\nabla \bar{v}_\pi \approx \frac{1}{1-\gamma} \mathbb{E}_{S\sim d_\pi, A\sim\pi}\left[\nabla\log\pi(A|S)\, q_\pi(S,A)\right]`}
+                  display={false}
+                />
               </p>
             </CardContent>
           </Card>
         </div>
 
         <PGFlowDiagram />
+
+        <Card>
+          <CardHeader className="pb-2"><CardTitle className="text-base">折扣策略梯度数值检查器（Theorem 9.2）</CardTitle></CardHeader>
+          <CardContent className="space-y-4 text-sm text-gray-700">
+            <div className="grid md:grid-cols-4 gap-4">
+              <div>
+                <label className="text-sm text-gray-700 block mb-1">参数动作</label>
+                <Select value={String(parameterAction)} onValueChange={(v) => setParameterAction(Number(v))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {ACTION_NAMES.map((name, a) => (
+                      <SelectItem key={a} value={String(a)}>{name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <label className="text-sm text-gray-700 block mb-1">参数状态</label>
+                <Select value={String(parameterState)} onValueChange={(v) => setParameterState(Number(v))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {Array.from({ length: numStates }, (_, s) => (
+                      <SelectItem key={s} value={String(s)}>s{s + 1}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <label className="text-sm text-gray-700 block mb-1">γ</label>
+                {paramSlider(gamma, setGamma, 0.01, 0.99, 0.01, 2)}
+              </div>
+              <div>
+                <label className="text-sm text-gray-700 block mb-1">d0</label>
+                <Select value={d0Mode} onValueChange={(v) => setD0Mode(v as D0Mode)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="uniform">uniform</SelectItem>
+                    <SelectItem value="start">start-state</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="grid md:grid-cols-3 gap-3">
+              <div className="bg-gray-50 rounded p-3 border border-gray-200">
+                <div className="text-gray-500 text-xs">finite-difference</div>
+                <div className="font-mono font-semibold">{check.finiteDifference.toExponential(4)}</div>
+              </div>
+              <div className="bg-gray-50 rounded p-3 border border-gray-200">
+                <div className="text-gray-500 text-xs">Theorem 9.2 exact</div>
+                <div className="font-mono font-semibold">{check.exact.toExponential(4)}</div>
+              </div>
+              <div className="bg-gray-50 rounded p-3 border border-gray-200">
+                <div className="text-gray-500 text-xs">stationary approximation</div>
+                <div className="font-mono font-semibold">{check.stationaryApprox.toExponential(4)}</div>
+              </div>
+            </div>
+
+            <div className="grid md:grid-cols-2 gap-3">
+              <div className="bg-gray-50 rounded p-3 border border-gray-200">
+                <div className="text-gray-500 text-xs">exact error |FD − exact|</div>
+                <div className="font-mono font-semibold">{check.exactError.toExponential(4)}</div>
+              </div>
+              <div className="bg-gray-50 rounded p-3 border border-gray-200">
+                <div className="text-gray-500 text-xs">stationary approx error |FD − approx|</div>
+                <div className="font-mono font-semibold">{check.stationaryError.toExponential(4)}</div>
+              </div>
+            </div>
+
+            <div className="bg-gray-50 rounded p-3 border border-gray-200">
+              <div className="text-gray-500 text-xs">ρ_π 总和</div>
+              <div className="font-mono font-semibold">
+                {check.rhoSum.toFixed(4)} / {check.expectedRhoSum.toFixed(4)} = 1/(1−γ)
+              </div>
+            </div>
+
+            <p>
+              ρ_π 满足 <KaTeX math={String.raw`\rho^\top = d_0^\top (I - \gamma P_\pi)^{-1}`} display={false} />，
+              是未归一化的 discounted occupancy measure，其元素和为 1/(1−γ)，不应简单称为概率分布。
+            </p>
+
+            <div className="bg-gray-50 rounded-xl p-4 border border-gray-200">
+              <LineChart
+                data={gammaErrors}
+                xKey="gamma"
+                xLabel="γ"
+                yLabel="误差"
+                series={[
+                  { key: 'exactError', name: '|FD − exact|', color: '#2563eb' },
+                  { key: 'stationaryError', name: '|FD − stationary approx|', color: '#ef4444' },
+                ]}
+                height={180}
+              />
+            </div>
+
+            <div>
+              <div className="text-sm font-semibold mb-2">调整 θ（one-hot）</div>
+              <div className="grid grid-cols-5 gap-2">
+                {theta.map((row, a) => (
+                  <div key={a} className="text-center">
+                    <div className="text-xs text-gray-500 mb-1">{ACTION_NAMES[a]}</div>
+                    {row.map((v, s) => (
+                      <input
+                        key={s}
+                        type="number"
+                        step={0.5}
+                        value={v.toFixed(1)}
+                        onChange={(e) => updateTheta(a, s, parseFloat(e.target.value) || 0)}
+                        className="w-full px-1 py-0.5 text-center border rounded text-xs mb-1"
+                      />
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       </div>
     </InteractiveDemo>
   );
@@ -695,6 +967,27 @@ function DiscountedPGDemo() {
 
 // ------------------- 9.3 Average-Reward Policy Gradient -------------------
 function AveragePGDemo() {
+  const config = DEFAULT_CONFIG;
+  const [policyMode, setPolicyMode] = useState<'uniform' | 'goal'>('goal');
+  const [horizon, setHorizon] = useState(50);
+
+  const theta = useMemo(() => {
+    if (policyMode === 'uniform') return zeroThetaForMode('onehot', config);
+    return buildPresetTheta('goal', 'onehot', config);
+  }, [policyMode, config]);
+
+  const policy = useMemo(() => policyTable(theta, 'onehot', config), [theta, config]);
+  const avg = useMemo(() => computeAverageRewardMetrics(policy, config, horizon), [policy, config, horizon]);
+
+  const cumulativeData = useMemo(() => {
+    const len = Math.max(avg.ordinaryCumulative.length, avg.differentialCumulative.length);
+    return Array.from({ length: len }, (_, t) => ({
+      step: t + 1,
+      ordinary: avg.ordinaryCumulative[t] ?? null,
+      differential: avg.differentialCumulative[t] ?? null,
+    }));
+  }, [avg]);
+
   return (
     <InteractiveDemo title="9.3 非折扣（平均奖励）情形的策略梯度定理">
       <div className="space-y-4">
@@ -721,8 +1014,68 @@ function AveragePGDemo() {
               display
             />
           }
-          description="未折扣普通回报会发散，因此要用减去平均奖励后的差分回报。"
+          description="使用差分回报；普通无限未折扣回报会发散。"
         />
+
+        <Card>
+          <CardHeader className="pb-2"><CardTitle className="text-base">平均奖励动态示例</CardTitle></CardHeader>
+          <CardContent className="space-y-4 text-sm text-gray-700">
+            <div className="flex flex-wrap gap-4 items-end">
+              <div>
+                <label className="text-sm text-gray-700 block mb-1">策略</label>
+                <Select value={policyMode} onValueChange={(v) => setPolicyMode(v as 'uniform' | 'goal')}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="uniform">uniform random</SelectItem>
+                    <SelectItem value="goal">goal-oriented deterministic</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="w-40">
+                <div className="text-sm text-gray-600 mb-1">模拟长度</div>
+                {paramSlider(horizon, setHorizon, 10, 200, 10)}
+              </div>
+            </div>
+
+            <div className="grid md:grid-cols-4 gap-3">
+              <div className="bg-gray-50 rounded p-2 text-center">
+                <div className="text-gray-500 text-xs">r̄_π</div>
+                <div className="font-mono font-semibold">{avg.rBar.toFixed(4)}</div>
+              </div>
+              <div className="bg-gray-50 rounded p-2 text-center">
+                <div className="text-gray-500 text-xs">Poisson residual</div>
+                <div className="font-mono font-semibold">{avg.poissonResidual.toExponential(2)}</div>
+              </div>
+              <div className="bg-gray-50 rounded p-2 text-center">
+                <div className="text-gray-500 text-xs">普通累计最终</div>
+                <div className="font-mono font-semibold">{avg.ordinaryCumulative[avg.ordinaryCumulative.length - 1]?.toFixed(2) ?? '—'}</div>
+              </div>
+              <div className="bg-gray-50 rounded p-2 text-center">
+                <div className="text-gray-500 text-xs">差分累计最终</div>
+                <div className="font-mono font-semibold">{avg.differentialCumulative[avg.differentialCumulative.length - 1]?.toFixed(2) ?? '—'}</div>
+              </div>
+            </div>
+
+            <div className="bg-gray-50 rounded-xl p-4 border border-gray-200">
+              <LineChart
+                data={cumulativeData}
+                xKey="step"
+                xLabel="步数"
+                yLabel="累计奖励"
+                series={[
+                  { key: 'ordinary', name: '普通累计 ΣR', color: '#2563eb' },
+                  { key: 'differential', name: '差分累计 Σ(R−r̄)', color: '#22c55e' },
+                ]}
+                height={180}
+              />
+            </div>
+
+            <p>
+              普通累计奖励通常会随长度增长而漂移；减去平均奖励 r̄_π 后，差分累计围绕零波动，
+              这正是差分价值有意义的原因。
+            </p>
+          </CardContent>
+        </Card>
       </div>
     </InteractiveDemo>
   );
@@ -774,11 +1127,11 @@ function ReinforceDemo() {
     });
   }, [config, alpha, beta, episodes, maxSteps, seed, useBaseline, featureMode]);
 
-  const maxStep = Math.max(0, result.updateRecords.length - 1);
-  const currentRecord = result.updateRecords[Math.min(step, result.updateRecords.length - 1)];
+  const safeStep = Math.min(step, Math.max(0, result.updateRecords.length - 1));
+  const currentRecord = result.updateRecords[safeStep];
   const currentEpisodeIndex = currentRecord ? currentRecord.episode : 0;
   const currentEpisode = result.episodes[currentEpisodeIndex];
-  const currentPolicy = result.policyHistory[Math.min(currentEpisodeIndex + 1, result.policyHistory.length - 1)];
+  const currentPolicy = currentRecord ? currentRecord.policyAfterUpdate : result.policyHistory[0];
 
   const returnData = useMemo(
     () =>
@@ -801,7 +1154,7 @@ function ReinforceDemo() {
             <div className="flex flex-col items-center justify-center bg-gray-50 rounded-xl p-6 border border-gray-200">
               <GridWorld config={config} policy={currentPolicy} showValues={false} className="max-w-full" />
               <p className="mt-3 text-sm text-gray-500 text-center">
-                第 {currentEpisodeIndex + 1} 回合后的策略（样本 {step + 1}/{result.updateRecords.length}）
+                第 {currentEpisodeIndex + 1} 回合，当前样本 {safeStep + 1}/{result.updateRecords.length} 更新后的策略
               </p>
             </div>
 
@@ -832,7 +1185,7 @@ function ReinforceDemo() {
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="episodic">episodic（固定起点，到达目标终止）</SelectItem>
-                      <SelectItem value="truncated-continuing">truncated continuing（H 步截断，非 stationary 样本）</SelectItem>
+                      <SelectItem value="truncated-continuing">truncated continuing（H 步截断）</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -898,7 +1251,11 @@ function ReinforceDemo() {
             <Card>
               <CardHeader className="pb-2"><CardTitle className="text-base">回放控制</CardTitle></CardHeader>
               <CardContent>
-                <AlgorithmPlayer maxStep={maxStep} currentStep={step} onStepChange={setStep} />
+                <AlgorithmPlayer
+                  maxStep={Math.max(0, result.updateRecords.length - 1)}
+                  currentStep={safeStep}
+                  onStepChange={setStep}
+                />
               </CardContent>
             </Card>
           </div>
@@ -939,7 +1296,7 @@ function BanditWarmup() {
   }));
 
   return (
-    <InteractiveDemo title="数学预热：无状态 Bandit">
+    <InteractiveDemo title="数学热身：无状态 Bandit">
       <div className="grid lg:grid-cols-2 gap-6">
         <div className="bg-gray-50 rounded-xl p-4 border border-gray-200">
           <div className="text-sm font-semibold text-gray-700 mb-2">REINFORCE（无基线）</div>
@@ -1000,13 +1357,7 @@ function BanditWarmup() {
   );
 }
 
-function PGUpdateCard({
-  record,
-  episode,
-}: {
-  record: PGUpdateRecord;
-  episode?: MDPEpisode;
-}) {
+function PGUpdateCard({ record, episode }: { record: PGUpdateRecord; episode?: MDPEpisode }) {
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-4 text-sm">
       <h3 className="font-semibold text-gray-800 mb-2">
@@ -1017,7 +1368,9 @@ function PGUpdateCard({
           <div>奖励 r：<span className="font-mono">{record.reward.toFixed(2)}</span></div>
           <div>回报 G_t：<span className="font-mono">{record.returnGt.toFixed(3)}</span></div>
           <div>behavior prob：<span className="font-mono">{record.behaviorProb.toFixed(3)}</span></div>
-          <div>update prob：<span className="font-mono">{record.updateProb.toFixed(3)}</span></div>
+          <div>update prob before：<span className="font-mono">{record.updateProbBefore.toFixed(3)}</span></div>
+          <div>update prob after：<span className="font-mono">{record.updateProbAfter.toFixed(3)}</span></div>
+          <div>Δ probability：<span className="font-mono">{record.deltaProbability.toFixed(4)}</span></div>
           {record.advantage !== undefined && (
             <>
               <div>baseline before：<span className="font-mono">{record.baselineBefore?.toFixed(3)}</span></div>
@@ -1056,7 +1409,6 @@ function BaselineBridgeDemo() {
   const [baseline, setBaseline] = useState(1.5);
   const [numSeeds, setNumSeeds] = useState(100);
 
-  // Keep theta shape in sync with feature mode.
   function handleFeatureModeChange(mode: PGFeatureMode) {
     setFeatureMode(mode);
     setTheta((prev) => {
@@ -1112,11 +1464,30 @@ function BaselineBridgeDemo() {
                 </Select>
               </div>
             </div>
-            <div className="font-mono text-xs bg-gray-50 p-2 rounded overflow-x-auto">
-              {expectation.map((v, i) => `${featureLabel(featureMode, i)}: ${v.toExponential(2)}`).join(', ')}
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs text-left">
+                <thead className="text-gray-500 border-b">
+                  <tr>
+                    <th>parameter action</th>
+                    {phi.map((_, j) => (
+                      <th key={j}>{featureLabel(featureMode, j)}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="text-gray-700">
+                  {expectation.map((row, a) => (
+                    <tr key={a} className="border-b last:border-0">
+                      <td>{ACTION_NAMES[a]}</td>
+                      {row.map((v, j) => (
+                        <td key={j} className="font-mono">{v.toExponential(2)}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
             <p className="text-xs text-gray-600">
-              数值接近 0 即验证：不依赖当前动作的基线不改变期望梯度。注意 b(s) 不能是动作的函数。
+              每个 (parameterAction, feature) 元素都接近 0，才验证 action-independent baseline 不改变期望梯度。
             </p>
           </CardContent>
         </Card>
@@ -1172,7 +1543,7 @@ function BaselineBridgeDemo() {
               </table>
             </div>
             <p className="text-xs text-gray-600">
-              两种估计器使用相同随机数，因此均值接近。合适基线通常降低方差，但不保证每个分量都降低；任意基线不保证降低每个梯度分量的方差。
+              两种估计器理论均值相同，是因为 action-independent baseline 项的动作期望为零。共同随机数只用于降低有限样本比较中两种估计量差值的噪声。适当基线通常降低方差，但任意基线不保证降低每个梯度分量的方差。
             </p>
           </CardContent>
         </Card>
