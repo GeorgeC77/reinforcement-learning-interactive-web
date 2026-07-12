@@ -819,7 +819,7 @@ function ReinforceDemo() {
               />
             </div>
 
-            {currentRecord && <PGUpdateCard record={currentRecord} episode={currentEpisode} featureMode={featureMode} />}
+            {currentRecord && <PGUpdateCard record={currentRecord} episode={currentEpisode} />}
           </div>
 
           <div className="space-y-4">
@@ -1003,11 +1003,9 @@ function BanditWarmup() {
 function PGUpdateCard({
   record,
   episode,
-  featureMode,
 }: {
   record: PGUpdateRecord;
   episode?: MDPEpisode;
-  featureMode: PGFeatureMode;
 }) {
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-4 text-sm">
