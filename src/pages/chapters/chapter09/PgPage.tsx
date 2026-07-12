@@ -547,7 +547,7 @@ function MetricsDemo() {
 
   const distributionData = useMemo(
     () =>
-      metrics.vPi.map((v, s) => ({
+      metrics.vPi.map((_, s) => ({
         state: `s${s + 1}`,
         d0: d0[s],
         dPi: metrics.dPi[s],
@@ -761,21 +761,16 @@ function DiscountedPGDemo() {
   const numStates = config.rows * config.cols;
   const [theta, setTheta] = useState<number[][]>(() => buildPresetTheta('goal', 'onehot', config));
   const [d0Mode, setD0Mode] = useState<D0Mode>('uniform');
-  const [customD0, setCustomD0] = useState<number[]>(new Array(numStates).fill(1 / numStates));
   const [parameterAction, setParameterAction] = useState(1);
   const [parameterState, setParameterState] = useState(3);
   const [gamma, setGamma] = useState(config.gamma);
 
   const d0 = useMemo(() => {
     if (d0Mode === 'uniform') return new Array(numStates).fill(1 / numStates);
-    if (d0Mode === 'start') {
-      const arr = new Array(numStates).fill(0);
-      arr[config.startState] = 1;
-      return arr;
-    }
-    const s = customD0.reduce((acc, v) => acc + v, 0);
-    return s === 0 ? customD0.map(() => 1 / numStates) : customD0.map((v) => v / s);
-  }, [d0Mode, customD0, numStates, config.startState]);
+    const arr = new Array(numStates).fill(0);
+    arr[config.startState] = 1;
+    return arr;
+  }, [d0Mode, numStates, config.startState]);
 
   const check = useMemo(
     () => checkDiscountGradientComponent(theta, config, d0, gamma, parameterAction, parameterState),

@@ -394,7 +394,7 @@ export function solveStateValues(policy: Policy, config: GridWorldConfig): State
   return solveLinearSystem(A, rPi);
 }
 
-function solveLinearSystem(A: number[][], b: number[]): number[] {
+export function solveLinearSystem(A: number[][], b: number[]): number[] {
   const n = A.length;
   const M: number[][] = A.map((row, i) => [...row, b[i]]);
 

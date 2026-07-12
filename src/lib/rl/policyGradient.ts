@@ -17,7 +17,8 @@ import {
   rewardForAction,
   sampleActionWithRng,
   solveStateValues,
-  computeQValues,
+  computeBellmanComponents,
+  solveLinearSystem as solveLinearSystemGW,
   isTerminal,
 } from './gridworld';
 
@@ -734,6 +735,31 @@ export function computeDiscountOccupancy(
  * Exact gradient of J(θ) = Σ_s d0(s) v_π(s) for one-hot softmax policy.
  * Returns the gradient component for a single (parameterAction, parameterState).
  */
+function solveStateValuesGamma(policy: Policy, config: GridWorldConfig, gamma: number): StateValues {
+  const { rPi, pPi } = computeBellmanComponents(policy, config);
+  const numStates = rPi.length;
+  const A = Array.from({ length: numStates }, (_, i) =>
+    Array.from({ length: numStates }, (_, j) => (i === j ? 1 : 0) - gamma * pPi[i][j])
+  );
+  return solveLinearSystemGW(A, rPi);
+}
+
+function computeQValuesGamma(values: StateValues, config: GridWorldConfig, gamma: number): number[][] {
+  const numStates = config.rows * config.cols;
+  const q: number[][] = Array.from({ length: numStates }, () => new Array(5).fill(0));
+  for (let s = 0; s < numStates; s++) {
+    if (isTerminal(s, config)) {
+      q[s] = new Array(5).fill(0);
+      continue;
+    }
+    for (let a = 0; a < 5; a++) {
+      const result = step(s, a as Action, config);
+      q[s][a] = result.done ? result.reward : result.reward + gamma * values[result.nextState];
+    }
+  }
+  return q;
+}
+
 export function exactDiscountGradientComponent(
   theta: number[][],
   config: GridWorldConfig,
@@ -743,8 +769,8 @@ export function exactDiscountGradientComponent(
   parameterState: number
 ): number {
   const policy = policyTable(theta, 'onehot', config);
-  const vPi = solveStateValues(policy, config);
-  const qPi = computeQValues(vPi, config);
+  const vPi = solveStateValuesGamma(policy, config, gamma);
+  const qPi = computeQValuesGamma(vPi, config, gamma);
   const rho = computeDiscountOccupancy(policy, config, d0, gamma);
   const s = parameterState;
   const a = parameterAction;
@@ -766,7 +792,7 @@ export function finiteDifferenceGradientComponent(
 ): number {
   function objective(th: number[][]) {
     const pol = policyTable(th, 'onehot', config);
-    const vals = solveStateValues(pol, config);
+    const vals = solveStateValuesGamma(pol, config, gamma);
     return d0.reduce((sum, dVal, s) => sum + dVal * vals[s], 0);
   }
 
@@ -787,8 +813,8 @@ export function stationaryApproxGradientComponent(
   parameterState: number
 ): number {
   const policy = policyTable(theta, 'onehot', config);
-  const vPi = solveStateValues(policy, config);
-  const qPi = computeQValues(vPi, config);
+  const vPi = solveStateValuesGamma(policy, config, gamma);
+  const qPi = computeQValuesGamma(vPi, config, gamma);
   const { d } = computeStationaryDistribution(policy, config);
   const s = parameterState;
   const a = parameterAction;
@@ -891,39 +917,6 @@ export interface AverageRewardMetrics {
   differentialCumulative: number[];
 }
 
-function solveLinearSystem(a: number[][], b: number[]): number[] | null {
-  const n = a.length;
-  if (n === 0) return null;
-  const aug = a.map((row, i) => [...row, b[i]]);
-
-  for (let i = 0; i < n; i++) {
-    let pivot = aug[i][i];
-    let pivotRow = i;
-    for (let r = i + 1; r < n; r++) {
-      if (Math.abs(aug[r][i]) > Math.abs(pivot)) {
-        pivot = aug[r][i];
-        pivotRow = r;
-      }
-    }
-    if (Math.abs(pivot) < 1e-12) return null;
-    if (pivotRow !== i) {
-      [aug[i], aug[pivotRow]] = [aug[pivotRow], aug[i]];
-    }
-    for (let j = 0; j <= n; j++) {
-      aug[i][j] /= pivot;
-    }
-    for (let r = 0; r < n; r++) {
-      if (r === i) continue;
-      const factor = aug[r][i];
-      for (let j = 0; j <= n; j++) {
-        aug[r][j] -= factor * aug[i][j];
-      }
-    }
-  }
-
-  return aug.map((row) => row[n]);
-}
-
 export function computeAverageRewardMetrics(
   policy: Policy,
   config: GridWorldConfig,
@@ -936,10 +929,8 @@ export function computeAverageRewardMetrics(
 
   // Poisson equation: (I - P^T) v = r - rBar 1, with d^T v = 0.
   const P = computeTransitionMatrix(policy, config);
-  const A: number[][] = Array.from({ length: numStates + 1 }, () =>
-    new Array(numStates + 1).fill(0)
-  );
-  const B: number[] = new Array(numStates + 1).fill(0);
+  const A: number[][] = Array.from({ length: numStates }, () => new Array(numStates).fill(0));
+  const B: number[] = new Array(numStates).fill(0);
   for (let s = 0; s < numStates; s++) {
     A[s][s] = 1;
     for (let sp = 0; sp < numStates; sp++) {
@@ -947,13 +938,14 @@ export function computeAverageRewardMetrics(
     }
     B[s] = rPi[s] - rBar;
   }
+  // Replace the last row with the normalization condition d^T v = 0.
   for (let s = 0; s < numStates; s++) {
-    A[numStates][s] = d[s];
+    A[numStates - 1][s] = d[s];
   }
-  B[numStates] = 0;
+  B[numStates - 1] = 0;
 
-  const solution = solveLinearSystem(A, B);
-  const differentialV = solution ? solution.slice(0, numStates) : new Array(numStates).fill(0);
+  const solution = solveLinearSystemGW(A, B);
+  const differentialV = solution;
 
   const differentialQ: number[][] = Array.from({ length: numStates }, () => new Array(5).fill(0));
   for (let s = 0; s < numStates; s++) {
