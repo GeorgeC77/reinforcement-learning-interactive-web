@@ -23,6 +23,7 @@ import {
   EPISODIC_PATH_CONFIG,
   ACTION_NAMES,
   type Action,
+  type GridWorldConfig,
 } from '@/lib/rl/gridworld';
 import {
   stateFeatures,
@@ -364,7 +365,7 @@ function PolicyFunctionDemo() {
                     <div className="grid grid-cols-3 gap-2">
                       {row.map((v, i) => (
                         <div key={i} className="flex flex-col">
-                          <span className="text-[10px] text-gray-500">{featureLabel(featureMode, i, config)}</span>
+                          <span className="text-[10px] text-gray-500">{featureLabel(featureMode, i)}</span>
                           <input
                             type="number"
                             step={0.1}
@@ -426,7 +427,7 @@ function zeroThetaForMode(mode: PGFeatureMode, config: GridWorldConfig): number[
   return Array.from({ length: 5 }, () => new Array(fdim).fill(0));
 }
 
-function featureLabel(mode: PGFeatureMode, index: number, config: GridWorldConfig): string {
+function featureLabel(mode: PGFeatureMode, index: number): string {
   if (mode === 'onehot') return `s${index + 1}`;
   if (mode === 'coordinate') {
     return ['bias', 'row', 'col'][index] ?? `f${index}`;
@@ -1114,7 +1115,7 @@ function BaselineBridgeDemo() {
               </div>
             </div>
             <div className="font-mono text-xs bg-gray-50 p-2 rounded overflow-x-auto">
-              {expectation.map((v, i) => `${featureLabel(featureMode, i, config)}: ${v.toExponential(2)}`).join(', ')}
+              {expectation.map((v, i) => `${featureLabel(featureMode, i)}: ${v.toExponential(2)}`).join(', ')}
             </div>
             <p className="text-xs text-gray-600">
               数值接近 0 即验证：不依赖当前动作的基线不改变期望梯度。注意 b(s) 不能是动作的函数。

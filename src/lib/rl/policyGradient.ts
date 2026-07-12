@@ -588,9 +588,7 @@ export function computePolicyMetrics(
   const policy = policyTable(theta, featureMode, config);
   const vPi = solveStateValues(policy, config);
   const rPi = policy.map((dist, s) => expectedImmediateReward(s, dist, config));
-  // Use regenerative stationary distribution so the metric is well-defined for
-  // both continuing and episodic transition structures.
-  const dPi = stationaryDistribution(policy, config, 2000, true);
+  const dPi = stationaryDistribution(policy, config, 2000);
 
   const Jv0 = d0.reduce((sum, d, s) => sum + d * vPi[s], 0);
   const Jv = dPi.reduce((sum, d, s) => sum + d * vPi[s], 0);

@@ -1,14 +1,11 @@
 import {
   DEFAULT_CONFIG,
-  EPISODIC_PATH_CONFIG,
 } from './gridworld';
 import {
   softmaxPolicy,
   stateFeatures,
   policyPreferences,
-  policyTable,
   softmaxScoreGradient,
-  softmaxScoreGradientFeature,
   expectedScoreZero,
   expectedScoreZeroFeature,
   computeDiscountedReturns,
@@ -100,7 +97,7 @@ export function runPGTests() {
     'same seed produces identical policy history'
   );
   assert(
-    banditA.records.some((r, i) => !arraysNear(banditA.policyHistory[i], banditB.policyHistory[i], 1e-9)),
+    banditA.records.some((_, i) => !arraysNear(banditA.policyHistory[i], banditB.policyHistory[i], 1e-9)),
     'different seeds produce different histories'
   );
   const finalPolicy = banditA.policyHistory[banditA.policyHistory.length - 1];
@@ -111,7 +108,7 @@ export function runPGTests() {
   baselineResult.records.forEach((rec) => {
     assert(rec.baselineBefore !== undefined, 'baselineBefore recorded');
     assert(rec.advantage !== undefined, 'advantage recorded');
-    assert(near(rec.advantage, rec.reward - rec.baselineBefore!, 1e-9), 'advantage uses baselineBefore');
+    assert(near(rec.advantage!, rec.reward - rec.baselineBefore!, 1e-9), 'advantage uses baselineBefore');
   });
   let baseline = 0;
   baselineResult.records.forEach((rec) => {
