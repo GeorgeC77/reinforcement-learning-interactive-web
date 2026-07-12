@@ -9,6 +9,7 @@
     "test:sa": "npx tsx scripts/run-sa-tests.ts",
     "test:td": "npx tsx scripts/run-td-tests.ts",
     "test:fa": "npx tsx scripts/run-fa-tests.ts",
+    "test:pg": "npx tsx scripts/run-pg-tests.ts",
     "lint": "eslint .",
     "preview": "vite preview"
   },
