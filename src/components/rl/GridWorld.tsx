@@ -73,10 +73,10 @@ export default function GridWorld({
   function cellStroke(state: number): string {
     if (state === highlightState) return '#3a7bd5';
     if (state === highlightNextState) return '#f59e0b';
-    if (state === highlightUpdatedState) return '#22c55e';
     if (state === config.targetState) return '#4caf50';
     if (config.forbiddenStates.includes(state)) return '#e25b5b';
     if (state === config.startState) return '#3a7bd5';
+    if (state === highlightUpdatedState) return '#22c55e';
     return '#dfe6e9';
   }
 

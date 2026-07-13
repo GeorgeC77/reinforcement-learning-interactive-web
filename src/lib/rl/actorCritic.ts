@@ -26,6 +26,7 @@ export interface ACUpdateRecord {
   action: Action;
   reward: number;
   nextState: number;
+  nextAction?: Action;
 
   done: boolean;
   truncated: boolean;
@@ -70,8 +71,12 @@ export interface ACResult {
   updates: ACUpdateRecord[];
   frames: ACFrame[];
   episodes: ACEpisodeRecord[];
+  initialPolicy: Policy;
+  policyAfterEpisode: Policy[];
   diverged: boolean;
   divergenceStep?: number;
+  divergenceReason?: string;
+  largeMagnitudeWarning?: { step: number; reason: string };
   finalQ?: number[][];
   finalV?: number[];
   finalPolicy?: Policy;
@@ -109,17 +114,66 @@ function allFinite(arr: number[]): boolean {
   return arr.every(finite);
 }
 
-function checkDivergence(record: ACUpdateRecord): boolean {
-  if (!finite(record.tdError) || !finite(record.actorWeight)) return true;
-  if (!allFinite(record.actorDelta) || !allFinite(record.scoreGradient)) return true;
-  if (!allFinite(record.actorPolicyBefore) || !allFinite(record.actorPolicyAfter)) return true;
-  if (record.actorFullPolicyBefore && !record.actorFullPolicyBefore.every((dist) => allFinite(dist))) return true;
-  if (record.actorFullPolicyAfter && !record.actorFullPolicyAfter.every((dist) => allFinite(dist))) return true;
-  if (record.vBefore && !allFinite(record.vBefore)) return true;
-  if (record.vAfter && !allFinite(record.vAfter)) return true;
-  if (record.qBefore && !record.qBefore.every((row) => allFinite(row))) return true;
-  if (record.qAfter && !record.qAfter.every((row) => allFinite(row))) return true;
-  return false;
+const SAFE_THRESHOLDS = {
+  tdError: 1e6,
+  actorWeight: 1e6,
+  criticEstimate: 1e9,
+  actorGradientNorm: 1e6,
+  criticUpdateNorm: 1e6,
+};
+
+export type NumericalHealth =
+  | { status: 'stable' }
+  | { status: 'warning'; reason: string }
+  | { status: 'stopped'; reason: string };
+
+export function checkNumericalHealth(record: ACUpdateRecord): NumericalHealth {
+  if (!finite(record.tdError) || !finite(record.actorWeight)) {
+    return { status: 'stopped', reason: 'non-finite TD error or actor weight' };
+  }
+  if (!allFinite(record.actorDelta) || !allFinite(record.scoreGradient)) {
+    return { status: 'stopped', reason: 'non-finite actor gradient or score' };
+  }
+  if (!allFinite(record.actorPolicyBefore) || !allFinite(record.actorPolicyAfter)) {
+    return { status: 'stopped', reason: 'non-finite policy probabilities' };
+  }
+  if (record.actorFullPolicyBefore && !record.actorFullPolicyBefore.every((dist) => allFinite(dist))) {
+    return { status: 'stopped', reason: 'non-finite full policy probabilities' };
+  }
+  if (record.actorFullPolicyAfter && !record.actorFullPolicyAfter.every((dist) => allFinite(dist))) {
+    return { status: 'stopped', reason: 'non-finite full policy probabilities' };
+  }
+  if (record.vBefore && !allFinite(record.vBefore)) {
+    return { status: 'stopped', reason: 'non-finite value vector' };
+  }
+  if (record.vAfter && !allFinite(record.vAfter)) {
+    return { status: 'stopped', reason: 'non-finite value vector' };
+  }
+  if (record.qBefore && !record.qBefore.every((row) => allFinite(row))) {
+    return { status: 'stopped', reason: 'non-finite Q table' };
+  }
+  if (record.qAfter && !record.qAfter.every((row) => allFinite(row))) {
+    return { status: 'stopped', reason: 'non-finite Q table' };
+  }
+
+  const actorGradientNorm = vectorL2(record.actorDelta);
+  const criticUpdateNorm = Math.abs(record.criticEstimateAfter - record.criticEstimateBefore);
+  const reasons: string[] = [];
+  if (Math.abs(record.tdError) > SAFE_THRESHOLDS.tdError) reasons.push(`|TD error|=${record.tdError.toExponential(2)}`);
+  if (Math.abs(record.actorWeight) > SAFE_THRESHOLDS.actorWeight) reasons.push(`|actor weight|=${record.actorWeight.toExponential(2)}`);
+  if (
+    Math.abs(record.criticEstimateBefore) > SAFE_THRESHOLDS.criticEstimate ||
+    Math.abs(record.criticEstimateAfter) > SAFE_THRESHOLDS.criticEstimate
+  ) {
+    reasons.push(`|critic estimate| exceeds ${SAFE_THRESHOLDS.criticEstimate}`);
+  }
+  if (actorGradientNorm > SAFE_THRESHOLDS.actorGradientNorm) reasons.push(`actor gradient norm=${actorGradientNorm.toExponential(2)}`);
+  if (criticUpdateNorm > SAFE_THRESHOLDS.criticUpdateNorm) reasons.push(`critic update norm=${criticUpdateNorm.toExponential(2)}`);
+
+  if (reasons.length > 0) {
+    return { status: 'warning', reason: reasons.join('; ') };
+  }
+  return { status: 'stable' };
 }
 
 export function checkCoverage(targetPolicy: number[], behaviorPolicy: number[]): void {
@@ -140,8 +194,23 @@ function computeEntropy(policy: number[]): number {
   return -policy.reduce((sum, p) => (p > 0 ? sum + p * Math.log(p) : sum), 0);
 }
 
-export function klDivergence(pi: number[], old: number[]): number {
-  return pi.reduce((sum, p, a) => (p > 0 && old[a] > 0 ? sum + p * Math.log(p / old[a]) : sum), 0);
+/**
+ * KL(oldPolicy || newPolicy) = Σ_a oldPolicy[a] log(oldPolicy[a] / newPolicy[a]).
+ *
+ * Zero-probability handling:
+ * - If oldPolicy[a] === 0, the term contributes 0.
+ * - If oldPolicy[a] > 0 and newPolicy[a] === 0, the divergence is Infinity.
+ */
+export function klDivergence(oldPolicy: number[], newPolicy: number[]): number {
+  let sum = 0;
+  for (let a = 0; a < oldPolicy.length; a++) {
+    const p = oldPolicy[a];
+    const q = newPolicy[a];
+    if (p === 0) continue;
+    if (q <= 0) return Infinity;
+    sum += p * Math.log(p / q);
+  }
+  return sum;
 }
 
 export function movingAverage(values: number[], window: number): number[] {
@@ -162,77 +231,221 @@ export function effectiveSampleSize(rhos: number[]): number {
 
 export interface ACMetricSeries {
   episode: number;
-  returnValue: number;
-  movingAverage: number;
-  length: number;
+  latestReturn: number;
+  movingAverageReturn: number;
+  overallAverageReturn: number;
+  meanEpisodeLength: number;
   success: number;
-  tdError: number;
-  actorGradientNorm: number;
+  successRate: number;
+  signedMeanTdError: number;
+  meanAbsoluteTdError: number;
+  rmsTdError: number;
+  actorUpdateNorm: number;
   criticUpdateNorm: number;
   entropy: number;
-  kl: number;
+  meanKL: number;
 }
 
 export function computeACMetricSeries(
   result: ACResult,
-  policyHistory: Policy[],
   window = 10
 ): ACMetricSeries[] {
-  const perEpisode: Record<number, { returns: number[]; lengths: number[]; tdErrors: number[]; actorNorms: number[]; criticNorms: number[]; entropies: number[]; kls: number[] }> = {};
+  const N = result.episodes.length;
+  if (N === 0) return [];
+
+  const initialPolicy = result.initialPolicy;
+  const policyAfterEpisode = result.policyAfterEpisode;
+
+  const perEpisode: {
+    tdErrors: number[];
+    actorNorms: number[];
+    criticNorms: number[];
+    lengths: number[];
+  }[] = Array.from({ length: N }, () => ({ tdErrors: [], actorNorms: [], criticNorms: [], lengths: [] }));
+
   result.updates.forEach((u) => {
     const e = u.episode;
-    if (!perEpisode[e]) {
-      perEpisode[e] = { returns: [], lengths: [], tdErrors: [], actorNorms: [], criticNorms: [], entropies: [], kls: [] };
-    }
-    perEpisode[e].tdErrors.push(u.tdError);
-    perEpisode[e].actorNorms.push(vectorL2(u.actorDelta));
-    const critUpdate = u.vAfter
-      ? Math.abs(u.criticEstimateAfter - u.criticEstimateBefore)
-      : 0;
-    perEpisode[e].criticNorms.push(critUpdate);
-  });
-
-  result.episodes.forEach((ep, i) => {
-    const e = i + 1;
-    if (!perEpisode[e]) perEpisode[e] = { returns: [], lengths: [], tdErrors: [], actorNorms: [], criticNorms: [], entropies: [], kls: [] };
-    perEpisode[e].returns.push(ep.cumulativeReward);
-    perEpisode[e].lengths.push(ep.episodeLength);
-  });
-
-  policyHistory.forEach((pol, i) => {
-    const e = i;
-    if (!perEpisode[e]) perEpisode[e] = { returns: [], lengths: [], tdErrors: [], actorNorms: [], criticNorms: [], entropies: [], kls: [] };
-    const ent = pol.reduce((sum, dist) => sum + computeEntropy(dist), 0) / pol.length;
-    perEpisode[e].entropies.push(ent);
-    if (i > 0) {
-      const kl = pol.reduce((sum, dist, s) => sum + klDivergence(dist, policyHistory[i - 1][s]), 0);
-      perEpisode[e].kls.push(kl);
+    if (e >= 1 && e <= N) {
+      perEpisode[e - 1].tdErrors.push(u.tdError);
+      perEpisode[e - 1].actorNorms.push(vectorL2(u.actorDelta));
+      perEpisode[e - 1].criticNorms.push(Math.abs(u.criticEstimateAfter - u.criticEstimateBefore));
     }
   });
 
-  const episodes = Object.keys(perEpisode)
-    .map(Number)
-    .sort((a, b) => a - b);
-  const returns = episodes.map((e) => perEpisode[e].returns[0] ?? 0);
-  const ma = movingAverage(returns, window);
+  const returns = result.episodes.map((ep) => ep.cumulativeReward);
+  const successes = result.episodes.map((ep) => (ep.success ? 1 : 0));
+  const returnMA = movingAverage(returns, window);
+  const successRateMA = movingAverage(successes, window);
+  const lengthMA = movingAverage(result.episodes.map((ep) => ep.episodeLength), window);
 
-  return episodes.map((e, i) => ({
-    episode: e,
-    returnValue: returns[i],
-    movingAverage: ma[i],
-    length: perEpisode[e].lengths[0] ?? 0,
-    success: perEpisode[e].returns[0] > 0 ? 1 : 0,
-    tdError: average(perEpisode[e].tdErrors),
-    actorGradientNorm: average(perEpisode[e].actorNorms),
-    criticUpdateNorm: average(perEpisode[e].criticNorms),
-    entropy: average(perEpisode[e].entropies),
-    kl: average(perEpisode[e].kls),
-  }));
+  let cumulativeReturnSum = 0;
+
+  return result.episodes.map((ep, i) => {
+    cumulativeReturnSum += ep.cumulativeReward;
+    const beforePolicy = i === 0 ? initialPolicy : policyAfterEpisode[i - 1];
+    const afterPolicy = policyAfterEpisode[i];
+    const ent =
+      afterPolicy.reduce((sum, dist) => sum + computeEntropy(dist), 0) / afterPolicy.length;
+    const meanKL =
+      afterPolicy.reduce((sum, dist, s) => sum + klDivergence(beforePolicy[s], dist), 0) /
+      afterPolicy.length;
+
+    const tdErrs = perEpisode[i].tdErrors;
+    const signedMean = tdErrs.length ? tdErrs.reduce((a, b) => a + b, 0) / tdErrs.length : 0;
+    const meanAbs = tdErrs.length ? tdErrs.reduce((a, b) => a + Math.abs(b), 0) / tdErrs.length : 0;
+    const rms = tdErrs.length ? Math.sqrt(tdErrs.reduce((a, b) => a + b * b, 0) / tdErrs.length) : 0;
+
+    return {
+      episode: i + 1,
+      latestReturn: ep.cumulativeReward,
+      movingAverageReturn: returnMA[i],
+      overallAverageReturn: cumulativeReturnSum / (i + 1),
+      meanEpisodeLength: lengthMA[i],
+      success: ep.success ? 1 : 0,
+      successRate: successRateMA[i],
+      signedMeanTdError: signedMean,
+      meanAbsoluteTdError: meanAbs,
+      rmsTdError: rms,
+      actorUpdateNorm: perEpisode[i].actorNorms.length
+        ? perEpisode[i].actorNorms.reduce((a, b) => a + b, 0) / perEpisode[i].actorNorms.length
+        : 0,
+      criticUpdateNorm: perEpisode[i].criticNorms.length
+        ? perEpisode[i].criticNorms.reduce((a, b) => a + b, 0) / perEpisode[i].criticNorms.length
+        : 0,
+      entropy: ent,
+      meanKL,
+    };
+  });
 }
 
-function average(values: number[]): number {
-  if (values.length === 0) return 0;
-  return values.reduce((a, b) => a + b, 0) / values.length;
+export interface SampledTransition {
+  nextState: number;
+  reward: number;
+  done: boolean;
+}
+
+export function sampleTransitionFromStateAction(
+  state: number,
+  action: Action,
+  config: GridWorldConfig,
+  _rng: () => number
+): SampledTransition {
+  const result = step(state, action, config);
+  return { nextState: result.nextState, reward: result.reward, done: result.done };
+}
+
+export interface StateActionTdEstimate {
+  samples: number[];
+  mean: number;
+  std: number;
+  count: number;
+}
+
+/**
+ * Sample a one-step TD error for a fixed (state, action) pair using the provided
+ * value estimator and RNG.  In a deterministic GridWorld the standard deviation
+ * is zero, but the interface is sample-based so the UI can show count/mean/std/error.
+ */
+export function sampleTdErrorAtStateAction(options: {
+  config: GridWorldConfig;
+  state: number;
+  action: Action;
+  values: number[];
+  rng: () => number;
+}): StateActionTdEstimate {
+  const { config, state, action, values, rng } = options;
+  if (isTerminal(state, config)) {
+    return { samples: [], mean: 0, std: 0, count: 0 };
+  }
+  const transition = sampleTransitionFromStateAction(state, action, config, rng);
+  const bootstrap = transition.done ? 0 : values[transition.nextState];
+  const tdError = transition.reward + config.gamma * bootstrap - values[state];
+  return { samples: [tdError], mean: tdError, std: 0, count: 1 };
+}
+
+/**
+ * Build the matrix M[a][k] = π(a|s) * b(s,a) * score(s,a)[k].
+ * Summing over actions gives the per-parameter contribution of the baseline.
+ * For an action-independent baseline, every column sum is 0.
+ * For an action-dependent baseline, column sums are generally non-zero.
+ */
+export function baselineExpectationMatrix(options: {
+  policy: number[];
+  state: number;
+  baselineByAction: number[];
+}): number[][] {
+  const { policy, baselineByAction } = options;
+  return policy.map((piA, a) => {
+    const score = softmaxScore(policy, a);
+    const b = baselineByAction[a] ?? 0;
+    return score.map((sc) => piA * b * sc);
+  });
+}
+
+export interface BaselineInvarianceResult {
+  perStateComponentSum: number[][];
+  maxAbs: number;
+  isInvariant: boolean;
+}
+
+/**
+ * Verify that a baseline leaves the policy gradient unchanged.
+ *
+ * For each state s and each policy preference component k we compute
+ * Σ_a π(a|s) score(s,a)[k] b(s,a).  If b(s,a) is the same for every a, then
+ * Σ_a π(a|s) score(s,a)[k] = 0 for every k, so the result is the zero vector
+ * (up to roundoff).  If b depends on a, the sum is generally non-zero.
+ */
+export function checkBaselineInvariance(
+  policy: Policy,
+  baseline: number[][]
+): BaselineInvarianceResult {
+  const perStateComponentSum = policy.map((pi, s) => {
+    const numActions = pi.length;
+    const sum = new Array(numActions).fill(0);
+    for (let a = 0; a < numActions; a++) {
+      const score = softmaxScore(pi, a);
+      const b = baseline[s]?.[a] ?? 0;
+      for (let k = 0; k < numActions; k++) {
+        sum[k] += pi[a] * score[k] * b;
+      }
+    }
+    return sum;
+  });
+  const maxAbs = Math.max(
+    ...perStateComponentSum.map((row) => Math.max(...row.map(Math.abs)))
+  );
+  return { perStateComponentSum, maxAbs, isInvariant: maxAbs < 1e-9 };
+}
+
+export function buildActionIndependentBaseline(numStates: number, value: number, numActions = 5): number[][] {
+  return Array.from({ length: numStates }, () => new Array(numActions).fill(value));
+}
+
+export function buildActionDependentBaseline(q: number[][]): number[][] {
+  return q.map((row) => [...row]);
+}
+
+function buildUniformPolicy(numStates: number, numActions: number): Policy {
+  const dist = new Array(numActions).fill(1 / numActions);
+  return Array.from({ length: numStates }, () => [...dist]);
+}
+
+function extractPolicyTrajectory(
+  updates: ACUpdateRecord[],
+  episodes: ACEpisodeRecord[],
+  finalPolicy?: Policy
+): { initialPolicy: Policy; policyAfterEpisode: Policy[] } {
+  const numStates = episodes.length > 0 && updates[0] ? updates[0].actorFullPolicyBefore?.length ?? 0 : 0;
+  const numActions = episodes.length > 0 && updates[0] ? updates[0].actorFullPolicyBefore?.[0]?.length ?? 0 : 0;
+  const fallback = finalPolicy ?? (numStates > 0 ? buildUniformPolicy(numStates, numActions) : []);
+  const initialPolicy = updates[0]?.actorFullPolicyBefore ?? fallback;
+  const policyAfterEpisode = episodes.map((_, i) => {
+    const e = i + 1;
+    const last = updates.filter((u) => u.episode === e).pop();
+    return last?.actorFullPolicyAfter ?? fallback;
+  });
+  return { initialPolicy, policyAfterEpisode };
 }
 
 // ---------------------------------------------------------------------------
@@ -252,8 +465,11 @@ export function qac(config: GridWorldConfig, options: ACOptions): ACResult {
   const episodesRecord: ACEpisodeRecord[] = [];
   let diverged = false;
   let divergenceStep: number | undefined;
+  let divergenceReason: string | undefined;
+  let largeMagnitudeWarning: { step: number; reason: string } | undefined;
+  let stopTraining = false;
 
-  for (let ep = 0; ep < episodes; ep++) {
+  for (let ep = 0; ep < episodes && !stopTraining; ep++) {
     let state = config.startState;
     let cumulativeReward = 0;
     let discountedReturn = 0;
@@ -262,13 +478,19 @@ export function qac(config: GridWorldConfig, options: ACOptions): ACResult {
     let success = false;
     let truncated = false;
 
-    for (let t = 0; t < horizonH; t++) {
-      if (isTerminal(state, config)) break;
+    if (isTerminal(state, config)) {
+      episodesRecord.push({ cumulativeReward, discountedReturn, episodeLength, success, truncated });
+      continue;
+    }
 
+    // Sarsa-style QAC: sample the first action from the current policy.
+    const initialPolicy = h.map((row) => softmaxDistribution(row));
+    let action = sampleActionWithRng(initialPolicy[state], rng) as Action;
+
+    for (let t = 0; t < horizonH; t++) {
       const fullPolicyBefore = h.map((row) => softmaxDistribution(row));
       const policyBefore = fullPolicyBefore[state];
-      const action = sampleActionWithRng(policyBefore, rng);
-      const result = step(state, action as Action, config);
+      const result = step(state, action, config);
       episodeLength = t + 1;
       cumulativeReward += result.reward;
       discountedReturn += discount * result.reward;
@@ -277,10 +499,11 @@ export function qac(config: GridWorldConfig, options: ACOptions): ACResult {
       const qBefore = q[state][action];
       let criticTarget = result.reward;
       let criticBootstrap = 0;
+      let nextAction: Action | undefined;
       if (!result.done) {
         const policyNext = softmaxDistribution(h[result.nextState]);
-        const aNext = sampleActionWithRng(policyNext, rng);
-        criticBootstrap = q[result.nextState][aNext];
+        nextAction = sampleActionWithRng(policyNext, rng) as Action;
+        criticBootstrap = q[result.nextState][nextAction];
         criticTarget += config.gamma * criticBootstrap;
       }
       const qTableBefore = q.map((row) => [...row]);
@@ -297,15 +520,17 @@ export function qac(config: GridWorldConfig, options: ACOptions): ACResult {
       }
       const fullPolicyAfter = h.map((row) => softmaxDistribution(row));
 
+      const isTruncated = !result.done && t === horizonH - 1;
       const record: ACUpdateRecord = {
         episode: ep + 1,
         time: t,
         state,
-        action: action as Action,
+        action,
         reward: result.reward,
         nextState: result.nextState,
+        nextAction,
         done: result.done,
-        truncated: false,
+        truncated: isTruncated,
         actorPolicyBefore: policyBefore,
         actorPolicyAfter: fullPolicyAfter[state],
         actorFullPolicyBefore: fullPolicyBefore,
@@ -322,33 +547,48 @@ export function qac(config: GridWorldConfig, options: ACOptions): ACResult {
         qAfter: qTableAfter,
       };
 
-      if (!diverged && checkDivergence(record)) {
+      const health = checkNumericalHealth(record);
+      if (health.status === 'stopped' && !diverged) {
         diverged = true;
         divergenceStep = updates.length;
+        divergenceReason = health.reason;
+        stopTraining = true;
+      } else if (health.status === 'warning' && !largeMagnitudeWarning) {
+        largeMagnitudeWarning = { step: updates.length, reason: health.reason };
       }
       updates.push(record);
+      if (stopTraining) break;
 
-      state = result.nextState;
       if (result.done) {
         success = true;
         break;
       }
       if (t === horizonH - 1) {
         truncated = true;
+        break;
       }
+
+      state = result.nextState;
+      action = nextAction!;
     }
 
     episodesRecord.push({ cumulativeReward, discountedReturn, episodeLength, success, truncated });
   }
 
+  const finalPolicy = h.map((row) => softmaxDistribution(row));
+  const { initialPolicy, policyAfterEpisode } = extractPolicyTrajectory(updates, episodesRecord, finalPolicy);
   return {
     updates,
     frames: updates,
     episodes: episodesRecord,
+    initialPolicy,
+    policyAfterEpisode,
     diverged,
     divergenceStep,
+    divergenceReason,
+    largeMagnitudeWarning,
     finalQ: q.map((row) => [...row]),
-    finalPolicy: h.map((row) => softmaxDistribution(row)),
+    finalPolicy,
   };
 }
 
@@ -369,8 +609,11 @@ export function a2c(config: GridWorldConfig, options: ACOptions): ACResult {
   const episodesRecord: ACEpisodeRecord[] = [];
   let diverged = false;
   let divergenceStep: number | undefined;
+  let divergenceReason: string | undefined;
+  let largeMagnitudeWarning: { step: number; reason: string } | undefined;
+  let stopTraining = false;
 
-  for (let ep = 0; ep < episodes; ep++) {
+  for (let ep = 0; ep < episodes && !stopTraining; ep++) {
     let state = config.startState;
     let cumulativeReward = 0;
     let discountedReturn = 0;
@@ -407,6 +650,7 @@ export function a2c(config: GridWorldConfig, options: ACOptions): ACResult {
       }
       const fullPolicyAfter = h.map((row) => softmaxDistribution(row));
 
+      const isTruncated = !result.done && t === horizonH - 1;
       const record: ACUpdateRecord = {
         episode: ep + 1,
         time: t,
@@ -415,7 +659,7 @@ export function a2c(config: GridWorldConfig, options: ACOptions): ACResult {
         reward: result.reward,
         nextState: result.nextState,
         done: result.done,
-        truncated: false,
+        truncated: isTruncated,
         actorPolicyBefore: policyBefore,
         actorPolicyAfter: fullPolicyAfter[state],
         actorFullPolicyBefore: fullPolicyBefore,
@@ -432,11 +676,17 @@ export function a2c(config: GridWorldConfig, options: ACOptions): ACResult {
         vAfter: vAfterAll,
       };
 
-      if (!diverged && checkDivergence(record)) {
+      const health = checkNumericalHealth(record);
+      if (health.status === 'stopped' && !diverged) {
         diverged = true;
         divergenceStep = updates.length;
+        divergenceReason = health.reason;
+        stopTraining = true;
+      } else if (health.status === 'warning' && !largeMagnitudeWarning) {
+        largeMagnitudeWarning = { step: updates.length, reason: health.reason };
       }
       updates.push(record);
+      if (stopTraining) break;
 
       state = result.nextState;
       if (result.done) {
@@ -449,14 +699,20 @@ export function a2c(config: GridWorldConfig, options: ACOptions): ACResult {
     episodesRecord.push({ cumulativeReward, discountedReturn, episodeLength, success, truncated });
   }
 
+  const finalPolicy = h.map((row) => softmaxDistribution(row));
+  const { initialPolicy, policyAfterEpisode } = extractPolicyTrajectory(updates, episodesRecord, finalPolicy);
   return {
     updates,
     frames: updates,
     episodes: episodesRecord,
+    initialPolicy,
+    policyAfterEpisode,
     diverged,
     divergenceStep,
+    divergenceReason,
+    largeMagnitudeWarning,
     finalV: [...v],
-    finalPolicy: h.map((row) => softmaxDistribution(row)),
+    finalPolicy,
   };
 }
 
@@ -477,8 +733,11 @@ export function offPolicyActorCritic(config: GridWorldConfig, options: ACOptions
   const episodesRecord: ACEpisodeRecord[] = [];
   let diverged = false;
   let divergenceStep: number | undefined;
+  let divergenceReason: string | undefined;
+  let largeMagnitudeWarning: { step: number; reason: string } | undefined;
+  let stopTraining = false;
 
-  for (let ep = 0; ep < episodes; ep++) {
+  for (let ep = 0; ep < episodes && !stopTraining; ep++) {
     let state = config.startState;
     let cumulativeReward = 0;
     let discountedReturn = 0;
@@ -522,6 +781,7 @@ export function offPolicyActorCritic(config: GridWorldConfig, options: ACOptions
       }
       const fullPolicyAfter = h.map((row) => softmaxDistribution(row));
 
+      const isTruncated = !result.done && t === horizonH - 1;
       const record: ACUpdateRecord = {
         episode: ep + 1,
         time: t,
@@ -530,7 +790,7 @@ export function offPolicyActorCritic(config: GridWorldConfig, options: ACOptions
         reward: result.reward,
         nextState: result.nextState,
         done: result.done,
-        truncated: false,
+        truncated: isTruncated,
         actorPolicyBefore: targetPolicy,
         actorPolicyAfter: fullPolicyAfter[state],
         actorFullPolicyBefore: fullPolicyBefore,
@@ -552,11 +812,17 @@ export function offPolicyActorCritic(config: GridWorldConfig, options: ACOptions
         rho,
       };
 
-      if (!diverged && checkDivergence(record)) {
+      const health = checkNumericalHealth(record);
+      if (health.status === 'stopped' && !diverged) {
         diverged = true;
         divergenceStep = updates.length;
+        divergenceReason = health.reason;
+        stopTraining = true;
+      } else if (health.status === 'warning' && !largeMagnitudeWarning) {
+        largeMagnitudeWarning = { step: updates.length, reason: health.reason };
       }
       updates.push(record);
+      if (stopTraining) break;
 
       state = result.nextState;
       if (result.done) {
@@ -569,14 +835,20 @@ export function offPolicyActorCritic(config: GridWorldConfig, options: ACOptions
     episodesRecord.push({ cumulativeReward, discountedReturn, episodeLength, success, truncated });
   }
 
+  const finalPolicy = h.map((row) => softmaxDistribution(row));
+  const { initialPolicy, policyAfterEpisode } = extractPolicyTrajectory(updates, episodesRecord, finalPolicy);
   return {
     updates,
     frames: updates,
     episodes: episodesRecord,
+    initialPolicy,
+    policyAfterEpisode,
     diverged,
     divergenceStep,
+    divergenceReason,
+    largeMagnitudeWarning,
     finalV: [...v],
-    finalPolicy: h.map((row) => softmaxDistribution(row)),
+    finalPolicy,
   };
 }
 
@@ -597,6 +869,9 @@ export function qBasedOffPolicyActorCritic(config: GridWorldConfig, options: ACO
   const episodesRecord: ACEpisodeRecord[] = [];
   let diverged = false;
   let divergenceStep: number | undefined;
+  let divergenceReason: string | undefined;
+  let largeMagnitudeWarning: { step: number; reason: string } | undefined;
+  let stopTraining = false;
 
   function behaviorPolicyFromQ(state: number): number[] {
     const qState = q[state];
@@ -607,7 +882,7 @@ export function qBasedOffPolicyActorCritic(config: GridWorldConfig, options: ACO
     return greedy.map((p) => epsilon / numActions + (1 - epsilon) * p);
   }
 
-  for (let ep = 0; ep < episodes; ep++) {
+  for (let ep = 0; ep < episodes && !stopTraining; ep++) {
     let state = config.startState;
     let cumulativeReward = 0;
     let discountedReturn = 0;
@@ -658,6 +933,7 @@ export function qBasedOffPolicyActorCritic(config: GridWorldConfig, options: ACO
       }
       const fullPolicyAfter = h.map((row) => softmaxDistribution(row));
 
+      const isTruncated = !result.done && t === horizonH - 1;
       const record: ACUpdateRecord = {
         episode: ep + 1,
         time: t,
@@ -666,7 +942,7 @@ export function qBasedOffPolicyActorCritic(config: GridWorldConfig, options: ACO
         reward: result.reward,
         nextState: result.nextState,
         done: result.done,
-        truncated: false,
+        truncated: isTruncated,
         actorPolicyBefore: targetPolicy,
         actorPolicyAfter: fullPolicyAfter[state],
         actorFullPolicyBefore: fullPolicyBefore,
@@ -688,11 +964,17 @@ export function qBasedOffPolicyActorCritic(config: GridWorldConfig, options: ACO
         rho,
       };
 
-      if (!diverged && checkDivergence(record)) {
+      const health = checkNumericalHealth(record);
+      if (health.status === 'stopped' && !diverged) {
         diverged = true;
         divergenceStep = updates.length;
+        divergenceReason = health.reason;
+        stopTraining = true;
+      } else if (health.status === 'warning' && !largeMagnitudeWarning) {
+        largeMagnitudeWarning = { step: updates.length, reason: health.reason };
       }
       updates.push(record);
+      if (stopTraining) break;
 
       state = result.nextState;
       if (result.done) {
@@ -705,14 +987,20 @@ export function qBasedOffPolicyActorCritic(config: GridWorldConfig, options: ACO
     episodesRecord.push({ cumulativeReward, discountedReturn, episodeLength, success, truncated });
   }
 
+  const finalPolicy = h.map((row) => softmaxDistribution(row));
+  const { initialPolicy, policyAfterEpisode } = extractPolicyTrajectory(updates, episodesRecord, finalPolicy);
   return {
     updates,
     frames: updates,
     episodes: episodesRecord,
+    initialPolicy,
+    policyAfterEpisode,
     diverged,
     divergenceStep,
+    divergenceReason,
+    largeMagnitudeWarning,
     finalQ: q.map((row) => [...row]),
-    finalPolicy: h.map((row) => softmaxDistribution(row)),
+    finalPolicy,
   };
 }
 
@@ -723,14 +1011,17 @@ export function qBasedOffPolicyActorCritic(config: GridWorldConfig, options: ACO
 export interface DeterministicACStep {
   step: number;
   state: number;
-  action: number;
+  actorAction: number;
+  behaviorAction: number;
+  explorationNoise: number;
   reward: number;
   nextState: number;
   done: boolean;
-  nextAction?: number;
+  nextActorAction?: number;
   target: number;
   prediction: number;
   tdError: number;
+  criticLoss: number;
   dqda: number;
   dmuDtheta: number[];
   actorGradient: number[];
@@ -738,6 +1029,7 @@ export interface DeterministicACStep {
   wAfter: number[];
   thetaBefore: number[];
   thetaAfter: number[];
+  criticWeightsUsedByActor: 'before' | 'after';
 }
 
 export interface DeterministicACResult {
@@ -746,11 +1038,36 @@ export interface DeterministicACResult {
   finalTheta: number[];
   diverged: boolean;
   divergenceStep?: number;
+  divergenceReason?: string;
+  largeMagnitudeWarning?: { step: number; reason: string };
 }
 
 export interface DeterministicACEnv {
   step: (state: number, action: number) => { nextState: number; reward: number; done: boolean };
   terminal: (state: number) => boolean;
+}
+
+function checkDeterministicStability(
+  tdError: number,
+  dqda: number,
+  w: number[],
+  theta: number[],
+  actorGradient: number[]
+): NumericalHealth {
+  if (!finite(tdError) || !finite(dqda) || !allFinite(actorGradient) || !allFinite(w) || !allFinite(theta)) {
+    return { status: 'stopped', reason: 'non-finite tdError, dqda, gradient, w or theta' };
+  }
+  const reasons: string[] = [];
+  if (Math.abs(tdError) > SAFE_THRESHOLDS.tdError) reasons.push(`|tdError|=${tdError.toExponential(2)}`);
+  if (Math.abs(dqda) > SAFE_THRESHOLDS.actorGradientNorm) reasons.push(`|dqda|=${dqda.toExponential(2)}`);
+  const wMax = Math.max(...w.map(Math.abs));
+  const thetaMax = Math.max(...theta.map(Math.abs));
+  const gradMax = Math.max(...actorGradient.map(Math.abs));
+  if (wMax > SAFE_THRESHOLDS.criticEstimate) reasons.push(`|w|_max=${wMax.toExponential(2)}`);
+  if (thetaMax > SAFE_THRESHOLDS.actorWeight) reasons.push(`|theta|_max=${thetaMax.toExponential(2)}`);
+  if (gradMax > SAFE_THRESHOLDS.actorGradientNorm) reasons.push(`|actor grad|_max=${gradMax.toExponential(2)}`);
+  if (reasons.length > 0) return { status: 'warning', reason: reasons.join('; ') };
+  return { status: 'stable' };
 }
 
 export function deterministicActorCriticEpisode(
@@ -770,6 +1087,7 @@ export function deterministicActorCriticEpisode(
     gradQWrtA: (s: number, a: number, w: number[]) => number;
     criticFeatures: (s: number, a: number) => number[];
     explorationNoiseStd?: number;
+    criticWeightsUsedByActor?: 'before' | 'after';
   }
 ): DeterministicACResult {
   const {
@@ -784,6 +1102,7 @@ export function deterministicActorCriticEpisode(
     gradQWrtA,
     criticFeatures,
     explorationNoiseStd = 0,
+    criticWeightsUsedByActor = 'before',
   } = options;
   const rng = mulberry32(seed);
   const steps: DeterministicACStep[] = [];
@@ -793,37 +1112,42 @@ export function deterministicActorCriticEpisode(
   let state = initialState;
   let diverged = false;
   let divergenceStep: number | undefined;
+  let divergenceReason: string | undefined;
+  let largeMagnitudeWarning: { step: number; reason: string } | undefined;
 
   for (let t = 0; t < horizonH; t++) {
-    let action = muWithTheta(state, currentTheta);
+    const actorAction = muWithTheta(state, currentTheta);
+    let noise = 0;
     if (explorationNoiseStd > 0) {
-      // Box-Muller style simple normal approx via uniform
       const u1 = rng();
       const u2 = rng();
-      const z = Math.sqrt(-2 * Math.log(u1 + 1e-12)) * Math.cos(2 * Math.PI * u2);
-      action += explorationNoiseStd * z;
+      noise = Math.sqrt(-2 * Math.log(u1 + 1e-12)) * Math.cos(2 * Math.PI * u2);
     }
+    const behaviorAction = actorAction + explorationNoiseStd * noise;
 
-    const result = env.step(state, action);
-    const nextAction = result.done ? undefined : muWithTheta(result.nextState, currentTheta);
+    const result = env.step(state, behaviorAction);
+    const nextActorAction = result.done ? undefined : muWithTheta(result.nextState, currentTheta);
 
     const target = result.done
       ? result.reward
-      : result.reward + gamma * qValueWithWeights(result.nextState, nextAction!, currentW);
-    const prediction = qValueWithWeights(state, action, currentW);
+      : result.reward + gamma * qValueWithWeights(result.nextState, nextActorAction!, currentW);
+    const prediction = qValueWithWeights(state, behaviorAction, currentW);
     const tdError = target - prediction;
+    const criticLoss = 0.5 * tdError * tdError;
 
     const wBefore = [...currentW];
     const thetaBefore = [...currentTheta];
 
-    // Critic update
-    const phi = criticFeatures(state, action);
+    // Critic update uses the behavior action actually executed.
+    const phi = criticFeatures(state, behaviorAction);
     for (let i = 0; i < currentW.length; i++) {
       currentW[i] += criticAlpha * tdError * phi[i];
     }
 
-    // Actor update
-    const dqda = gradQWrtA(state, action, currentW);
+    // Actor gradient is computed at the deterministic actor action.
+    // By default use wBefore so the Actor signal and Critic update are clearly timed.
+    const actorCriticWeights = criticWeightsUsedByActor === 'before' ? wBefore : currentW;
+    const dqda = gradQWrtA(state, actorAction, actorCriticWeights);
     const dmuDtheta = gradMuWithTheta(state, currentTheta);
     const actorGradient = dmuDtheta.map((g) => actorAlpha * dqda * g);
     for (let i = 0; i < currentTheta.length; i++) {
@@ -833,14 +1157,17 @@ export function deterministicActorCriticEpisode(
     const stepRecord: DeterministicACStep = {
       step: t,
       state,
-      action,
+      actorAction,
+      behaviorAction,
+      explorationNoise: explorationNoiseStd * noise,
       reward: result.reward,
       nextState: result.nextState,
       done: result.done,
-      nextAction,
+      nextActorAction,
       target,
       prediction,
       tdError,
+      criticLoss,
       dqda,
       dmuDtheta,
       actorGradient,
@@ -848,19 +1175,18 @@ export function deterministicActorCriticEpisode(
       wAfter: [...currentW],
       thetaBefore,
       thetaAfter: [...currentTheta],
+      criticWeightsUsedByActor,
     };
 
-    if (!diverged) {
-      const bad =
-        !finite(tdError) ||
-        !finite(dqda) ||
-        !allFinite(actorGradient) ||
-        !allFinite(currentW) ||
-        !allFinite(currentTheta);
-      if (bad) {
-        diverged = true;
-        divergenceStep = t;
-      }
+    const health = checkDeterministicStability(tdError, dqda, currentW, currentTheta, actorGradient);
+    if (health.status === 'stopped' && !diverged) {
+      diverged = true;
+      divergenceStep = t;
+      divergenceReason = health.reason;
+      steps.push(stepRecord);
+      break;
+    } else if (health.status === 'warning' && !largeMagnitudeWarning) {
+      largeMagnitudeWarning = { step: t, reason: health.reason };
     }
     steps.push(stepRecord);
 
@@ -868,5 +1194,5 @@ export function deterministicActorCriticEpisode(
     if (result.done || env.terminal(state)) break;
   }
 
-  return { steps, finalW: currentW, finalTheta: currentTheta, diverged, divergenceStep };
+  return { steps, finalW: currentW, finalTheta: currentTheta, diverged, divergenceStep, divergenceReason, largeMagnitudeWarning };
 }

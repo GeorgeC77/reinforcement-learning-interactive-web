@@ -22,12 +22,13 @@ import {
   EPISODIC_PATH_CONFIG,
   ACTION_NAMES,
   type GridWorldConfig,
-  type Policy,
   type Action,
   solveStateValues,
   computeQValues,
   actionValueToStateValue,
+  isTerminal,
 } from '@/lib/rl/gridworld';
+import { mulberry32 } from '@/lib/rl/stochasticApproximation';
 import {
   qac,
   a2c,
@@ -36,11 +37,14 @@ import {
   deterministicActorCriticEpisode,
   policyWeightedStateValues,
   effectiveSampleSize,
-  klDivergence,
-  movingAverage,
+  computeACMetricSeries,
+  sampleTdErrorAtStateAction,
+  checkBaselineInvariance,
+  baselineExpectationMatrix,
+  buildActionIndependentBaseline,
+  buildActionDependentBaseline,
   type ACUpdateRecord,
   type ACResult,
-  type ACMetricSeries,
   type DeterministicACStep,
 } from '@/lib/rl/actorCritic';
 
@@ -51,95 +55,6 @@ type TaskType = 'episodic' | 'continuing';
 
 function buildConfig(base: GridWorldConfig, taskType: TaskType): GridWorldConfig {
   return { ...base, taskType };
-}
-
-function policyHistoryFromResult(result: ACResult): Policy[] {
-  if (result.updates.length === 0) return result.finalPolicy ? [result.finalPolicy] : [];
-  const firstFull = result.updates[0].actorFullPolicyBefore;
-  const histories: number[][][] = firstFull ? [firstFull] : [result.updates[0].actorPolicyBefore.map(() => result.updates[0].actorPolicyBefore)];
-  let lastEpisode = 0;
-  result.updates.forEach((u) => {
-    if (u.episode !== lastEpisode) {
-      histories.push(u.actorFullPolicyBefore ?? histories[histories.length - 1]);
-      lastEpisode = u.episode;
-    }
-    histories[histories.length - 1] = u.actorFullPolicyAfter ?? histories[histories.length - 1];
-  });
-  return histories;
-}
-
-function computeMetricSeries(result: ACResult): ACMetricSeries[] {
-  const policies = policyHistoryFromResult(result);
-  const perEpisode: Record<
-    number,
-    {
-      returns: number[];
-      lengths: number[];
-      tdErrors: number[];
-      actorNorms: number[];
-      criticUpdates: number[];
-      entropies: number[];
-      kls: number[];
-    }
-  > = {};
-
-  result.updates.forEach((u) => {
-    const e = u.episode;
-    if (!perEpisode[e]) {
-      perEpisode[e] = { returns: [], lengths: [], tdErrors: [], actorNorms: [], criticUpdates: [], entropies: [], kls: [] };
-    }
-    perEpisode[e].tdErrors.push(u.tdError);
-    perEpisode[e].actorNorms.push(Math.sqrt(u.actorDelta.reduce((s, x) => s + x * x, 0)));
-    const critUpdate = u.vAfter
-      ? Math.abs(u.criticEstimateAfter - u.criticEstimateBefore)
-      : Math.abs(u.criticEstimateAfter - u.criticEstimateBefore);
-    perEpisode[e].criticUpdates.push(critUpdate);
-  });
-
-  result.episodes.forEach((ep, i) => {
-    const e = i + 1;
-    if (!perEpisode[e]) {
-      perEpisode[e] = { returns: [], lengths: [], tdErrors: [], actorNorms: [], criticUpdates: [], entropies: [], kls: [] };
-    }
-    perEpisode[e].returns.push(ep.cumulativeReward);
-    perEpisode[e].lengths.push(ep.episodeLength);
-  });
-
-  policies.forEach((pol, i) => {
-    const e = i;
-    if (!perEpisode[e]) {
-      perEpisode[e] = { returns: [], lengths: [], tdErrors: [], actorNorms: [], criticUpdates: [], entropies: [], kls: [] };
-    }
-    const ent = pol.reduce((sum, dist) => {
-      return sum - dist.reduce((s, p) => (p > 0 ? s + p * Math.log(p) : s), 0);
-    }, 0) / pol.length;
-    perEpisode[e].entropies.push(ent);
-    if (i > 0) {
-      const kl = pol.reduce((sum, dist, s) => sum + klDivergence(dist, policies[i - 1][s]), 0);
-      perEpisode[e].kls.push(kl);
-    }
-  });
-
-  const episodes = Object.keys(perEpisode)
-    .map(Number)
-    .sort((a, b) => a - b);
-  const returns = episodes.map((e) => perEpisode[e].returns[0] ?? 0);
-  const ma = movingAverage(returns, 10);
-
-  const avg = (arr: number[]) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0);
-
-  return episodes.map((e, i) => ({
-    episode: e,
-    returnValue: returns[i],
-    movingAverage: ma[i],
-    length: perEpisode[e].lengths[0] ?? 0,
-    success: (perEpisode[e].lengths[0] ?? 0) > 0 && perEpisode[e].returns[0] > 0 ? 1 : 0,
-    tdError: avg(perEpisode[e].tdErrors),
-    actorGradientNorm: avg(perEpisode[e].actorNorms),
-    criticUpdateNorm: avg(perEpisode[e].criticUpdates),
-    entropy: avg(perEpisode[e].entropies),
-    kl: avg(perEpisode[e].kls),
-  }));
 }
 
 export default function Chapter10AcPage() {
@@ -261,39 +176,46 @@ function Param({
   );
 }
 
-function MetricPanel({ series, diverged, divergenceStep }: { series: ACMetricSeries[]; diverged: boolean; divergenceStep?: number }) {
+function MetricPanel({ result }: { result: ACResult }) {
+  const series = useMemo(() => computeACMetricSeries(result, 10), [result]);
+  const last = series.length > 0 ? series[series.length - 1] : null;
   return (
     <div className="space-y-4">
-      {diverged && (
+      {result.diverged && (
         <div className="flex items-center gap-2 text-red-600 bg-red-50 p-3 rounded-lg border border-red-200 text-sm">
           <AlertTriangle className="w-4 h-4" />
-          检测到数值不稳定（发散），大约在第 {divergenceStep} 步。请减小学习率或增大 Critic 学习率。
+          数值异常已停止训练（约第 {result.divergenceStep} 步）
+          {result.divergenceReason ? `：${result.divergenceReason}` : ''}。
+          请减小学习率或检查奖励尺度。
+        </div>
+      )}
+      {result.largeMagnitudeWarning && !result.diverged && (
+        <div className="flex items-center gap-2 text-amber-600 bg-amber-50 p-3 rounded-lg border border-amber-200 text-sm">
+          <AlertTriangle className="w-4 h-4" />
+          第 {result.largeMagnitudeWarning.step} 步出现大数值：{result.largeMagnitudeWarning.reason}。
+          当前尚未停止，但建议调小学习率。
         </div>
       )}
       <div className="grid grid-cols-2 gap-3 text-xs">
         <div className="bg-gray-50 rounded p-2">
-          <div className="text-gray-500">平均回报</div>
-          <div className="font-mono font-semibold">
-            {series.length > 0 ? series[series.length - 1].returnValue.toFixed(2) : '—'}
-          </div>
+          <div className="text-gray-500">最近一回合累计奖励</div>
+          <div className="font-mono font-semibold">{last ? last.latestReturn.toFixed(2) : '—'}</div>
         </div>
         <div className="bg-gray-50 rounded p-2">
-          <div className="text-gray-500">移动平均回报</div>
-          <div className="font-mono font-semibold">
-            {series.length > 0 ? series[series.length - 1].movingAverage.toFixed(2) : '—'}
-          </div>
+          <div className="text-gray-500">最近 10 回合平均奖励</div>
+          <div className="font-mono font-semibold">{last ? last.movingAverageReturn.toFixed(2) : '—'}</div>
         </div>
         <div className="bg-gray-50 rounded p-2">
-          <div className="text-gray-500">平均 TD error</div>
-          <div className="font-mono font-semibold">
-            {series.length > 0 ? series[series.length - 1].tdError.toFixed(3) : '—'}
-          </div>
+          <div className="text-gray-500">全训练平均奖励</div>
+          <div className="font-mono font-semibold">{last ? last.overallAverageReturn.toFixed(2) : '—'}</div>
         </div>
         <div className="bg-gray-50 rounded p-2">
-          <div className="text-gray-500">策略熵</div>
-          <div className="font-mono font-semibold">
-            {series.length > 0 ? series[series.length - 1].entropy.toFixed(3) : '—'}
-          </div>
+          <div className="text-gray-500">成功率</div>
+          <div className="font-mono font-semibold">{last ? `${(last.successRate * 100).toFixed(0)}%` : '—'}</div>
+        </div>
+        <div className="bg-gray-50 rounded p-2 col-span-2">
+          <div className="text-gray-500">mean absolute TD error</div>
+          <div className="font-mono font-semibold">{last ? last.meanAbsoluteTdError.toFixed(3) : '—'}</div>
         </div>
       </div>
 
@@ -303,8 +225,9 @@ function MetricPanel({ series, diverged, divergenceStep }: { series: ACMetricSer
         xLabel="回合"
         yLabel="回报"
         series={[
-          { key: 'returnValue', name: 'Episode Return', color: '#2563eb' },
-          { key: 'movingAverage', name: 'Moving Average', color: '#ef4444' },
+          { key: 'latestReturn', name: 'Episode Return', color: '#2563eb' },
+          { key: 'movingAverageReturn', name: 'Moving Average', color: '#ef4444' },
+          { key: 'overallAverageReturn', name: 'Overall Average', color: '#22c55e' },
         ]}
         height={160}
       />
@@ -314,34 +237,56 @@ function MetricPanel({ series, diverged, divergenceStep }: { series: ACMetricSer
         xLabel="回合"
         yLabel="指标"
         series={[
-          { key: 'actorGradientNorm', name: 'Actor Gradient Norm', color: '#2563eb' },
+          { key: 'actorUpdateNorm', name: 'Actor Update Norm', color: '#2563eb' },
           { key: 'criticUpdateNorm', name: 'Critic Update Norm', color: '#22c55e' },
+          { key: 'meanAbsoluteTdError', name: 'Mean |TD Error|', color: '#f59e0b' },
         ]}
         height={140}
+      />
+      <LineChart
+        data={series as any}
+        xKey="episode"
+        xLabel="回合"
+        yLabel="KL"
+        series={[{ key: 'meanKL', name: '相邻策略平均 KL 变化', color: '#8b5cf6' }]}
+        height={120}
       />
     </div>
   );
 }
 
 function TransitionCard({ record }: { record: ACUpdateRecord }) {
+  let statusLabel = 'ordinary transition';
+  let statusClass = 'bg-gray-100 text-gray-700';
+  if (record.done) {
+    statusLabel = 'natural terminal';
+    statusClass = 'bg-green-100 text-green-700';
+  } else if (record.truncated) {
+    statusLabel = 'horizon truncated';
+    statusClass = 'bg-amber-100 text-amber-700';
+  }
+
   return (
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
-      <div className="bg-gray-50 rounded p-2">
-        <div className="text-gray-500 text-xs">S_t</div>
-        <div className="font-mono">s{record.state + 1}</div>
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
+        <div className="bg-gray-50 rounded p-2">
+          <div className="text-gray-500 text-xs">S_t</div>
+          <div className="font-mono">s{record.state + 1}</div>
+        </div>
+        <div className="bg-gray-50 rounded p-2">
+          <div className="text-gray-500 text-xs">A_t</div>
+          <div className="font-mono">{ACTION_NAMES[record.action]}</div>
+        </div>
+        <div className="bg-gray-50 rounded p-2">
+          <div className="text-gray-500 text-xs">R_{'{t+1}'}</div>
+          <div className="font-mono">{record.reward.toFixed(2)}</div>
+        </div>
+        <div className="bg-gray-50 rounded p-2">
+          <div className="text-gray-500 text-xs">S_{'{t+1}'}</div>
+          <div className="font-mono">s{record.nextState + 1}</div>
+        </div>
       </div>
-      <div className="bg-gray-50 rounded p-2">
-        <div className="text-gray-500 text-xs">A_t</div>
-        <div className="font-mono">{ACTION_NAMES[record.action]}</div>
-      </div>
-      <div className="bg-gray-50 rounded p-2">
-        <div className="text-gray-500 text-xs">R_{'{t+1}'}</div>
-        <div className="font-mono">{record.reward.toFixed(2)}</div>
-      </div>
-      <div className="bg-gray-50 rounded p-2">
-        <div className="text-gray-500 text-xs">S_{'{t+1}'}</div>
-        <div className="font-mono">s{record.nextState + 1}</div>
-      </div>
+      <div className={`inline-block px-2 py-1 rounded text-xs ${statusClass}`}>{statusLabel}</div>
     </div>
   );
 }
@@ -504,7 +449,7 @@ function OverviewDemo() {
   const config = useMemo(() => buildConfig(EPISODIC_PATH_CONFIG, 'episodic'), []);
   const result = useMemo(
     () =>
-      qac(config, {
+      a2c(config, {
         seed: 1,
         horizonH: 20,
         actorAlpha: 0.05,
@@ -534,21 +479,44 @@ S_{t+1} &\xrightarrow{\text{Critic } v_w} \text{bootstrap} \\
                 display
               />
             }
-            description="Critic 提供评价信号（TD error），Actor 用它更新策略。"
+            description="这里的 Critic 估计状态值 V；δ_t 是 advantage A_π(S_t,A_t) 的单步样本估计。QAC（用 Q 直接驱动 Actor）在下一 tab 单独介绍。"
           />
           {record && (
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">第 {step + 1} 步示例</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <TransitionCard record={record} />
-                <div className="grid grid-cols-2 gap-3">
-                  <CriticCard record={record} />
-                  <ActorCard record={record} />
+            <>
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">第 {step + 1} 步示例</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <TransitionCard record={record} />
+                  <div className="grid grid-cols-2 gap-3">
+                    <CriticCard record={record} />
+                    <ActorCard record={record} />
+                  </div>
+                </CardContent>
+              </Card>
+              <div className="bg-gray-50 rounded-xl p-4 border border-gray-200">
+                <GridWorld
+                  config={config}
+                  policy={record.actorFullPolicyAfter ?? Array.from({ length: config.rows * config.cols }, () => Array.from({ length: 5 }, () => 1 / 5))}
+                  values={record.vAfter ?? new Array(config.rows * config.cols).fill(0)}
+                  showValues
+                  highlightState={record.state}
+                  highlightNextState={record.nextState}
+                  highlightAction={{ state: record.state, action: record.action }}
+                  highlightUpdatedState={record.state}
+                  className="max-w-full"
+                />
+                <div className="mt-2 flex flex-wrap gap-3 text-xs text-gray-600">
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-[#3a7bd5]" /> current S_t</span>
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-[#f59e0b]" /> next S_{'{t+1}'}</span>
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-[#22c55e]" /> updated state</span>
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-[#1a3a5c]" /> current action</span>
+                  {record.done && <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-green-200" /> natural terminal</span>}
+                  {record.truncated && <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-amber-200" /> horizon truncated</span>}
                 </div>
-              </CardContent>
-            </Card>
+              </div>
+            </>
           )}
         </div>
         <div className="space-y-4">
@@ -615,7 +583,6 @@ function QacDemo() {
   );
   const [step, setStep] = useState(0);
   const record = result.updates[Math.min(step, result.updates.length - 1)];
-  const metricSeries = useMemo(() => computeMetricSeries(result), [result]);
 
   const currentQ = record?.qAfter;
   const currentPolicy = record?.actorFullPolicyAfter;
@@ -673,8 +640,26 @@ q(S_t,A_t) &\leftarrow q(S_t,A_t) + \alpha_w \delta_t \\
                     </SelectContent>
                   </Select>
                 </div>
-                <GridWorld config={config} policy={currentPolicy} values={values} showValues className="max-w-full" />
-                <p className="mt-2 text-xs text-gray-600">
+                <GridWorld
+                  config={config}
+                  policy={currentPolicy}
+                  values={values}
+                  showValues
+                  highlightState={record.state}
+                  highlightNextState={record.nextState}
+                  highlightAction={{ state: record.state, action: record.action }}
+                  highlightUpdatedState={record.state}
+                  className="max-w-full"
+                />
+                <div className="mt-2 flex flex-wrap gap-3 text-xs text-gray-600">
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-[#3a7bd5]" /> current S_t</span>
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-[#f59e0b]" /> next S_{'{t+1}'}</span>
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-[#22c55e]" /> updated state</span>
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-[#1a3a5c]" /> current action</span>
+                  {record.done && <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-green-200" /> natural terminal</span>}
+                  {record.truncated && <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-amber-200" /> horizon truncated</span>}
+                </div>
+                <p className="mt-1 text-xs text-gray-600">
                   {valueMode === 'actor'
                     ? 'V_π(s) = Σ_a π(a|s) q(s,a)，对应当前 Actor 的随机策略。'
                     : 'max_a q(s,a)，对应贪婪策略的值。'}
@@ -682,7 +667,7 @@ q(S_t,A_t) &\leftarrow q(S_t,A_t) + \alpha_w \delta_t \\
               </div>
             </>
           )}
-          <MetricPanel series={metricSeries} diverged={result.diverged} divergenceStep={result.divergenceStep} />
+          <MetricPanel result={result} />
         </div>
         <div className="space-y-4">
           <Card>
@@ -739,7 +724,39 @@ function BaselineAdvantageDemo() {
   );
   const [step, setStep] = useState(0);
   const record = result.updates[Math.min(step, result.updates.length - 1)];
-  const metricSeries = useMemo(() => computeMetricSeries(result), [result]);
+  const numStates = config.rows * config.cols;
+  const uniformPolicy = useMemo(
+    () => Array.from({ length: numStates }, () => Array.from({ length: 5 }, () => 1 / 5)),
+    [numStates]
+  );
+  const baselineV = useMemo(() => solveStateValues(uniformPolicy, config), [uniformPolicy, config]);
+  const baselineQ = useMemo(() => computeQValues(baselineV, config), [baselineV, config]);
+  const independentBaseline = useMemo(() => buildActionIndependentBaseline(numStates, 1.0), [numStates]);
+  const dependentBaseline = useMemo(() => buildActionDependentBaseline(baselineQ), [baselineQ]);
+  const independentCheck = useMemo(
+    () => checkBaselineInvariance(uniformPolicy, independentBaseline),
+    [uniformPolicy, independentBaseline]
+  );
+  const dependentCheck = useMemo(() => checkBaselineInvariance(uniformPolicy, dependentBaseline), [uniformPolicy, dependentBaseline]);
+  const [baselineState, setBaselineState] = useState(0);
+  const independentMatrix = useMemo(
+    () =>
+      baselineExpectationMatrix({
+        policy: uniformPolicy[baselineState],
+        state: baselineState,
+        baselineByAction: independentBaseline[baselineState],
+      }),
+    [uniformPolicy, baselineState, independentBaseline]
+  );
+  const dependentMatrix = useMemo(
+    () =>
+      baselineExpectationMatrix({
+        policy: uniformPolicy[baselineState],
+        state: baselineState,
+        baselineByAction: dependentBaseline[baselineState],
+      }),
+    [uniformPolicy, baselineState, dependentBaseline]
+  );
 
   return (
     <InteractiveDemo title="Baseline 不变性与 Advantage 估计">
@@ -772,7 +789,154 @@ function BaselineAdvantageDemo() {
             </Card>
           )}
           <ExactAdvantagePanel config={config} />
-          <MetricPanel series={metricSeries} diverged={result.diverged} divergenceStep={result.divergenceStep} />
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Baseline 不变性数值验证</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-green-50 rounded p-2 border border-green-100">
+                  <div className="text-green-700 text-xs">action-independent b(s)=1</div>
+                  <div className="font-mono">max |Σ_a π score·b| = {independentCheck.maxAbs.toExponential(2)}</div>
+                  <div className="text-xs text-green-700 mt-1">
+                    {independentCheck.isInvariant ? '≈ 0，符合不变性' : '非零，请检查实现'}
+                  </div>
+                </div>
+                <div className="bg-red-50 rounded p-2 border border-red-100">
+                  <div className="text-red-700 text-xs">action-dependent b(s,a)=Q(s,a)</div>
+                  <div className="font-mono">max |Σ_a π score·b| = {dependentCheck.maxAbs.toFixed(4)}</div>
+                  <div className="text-xs text-red-700 mt-1">通常非零，会改变策略梯度</div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-gray-700">查看状态</label>
+                <Select value={String(baselineState)} onValueChange={(v) => setBaselineState(Number(v))}>
+                  <SelectTrigger className="w-32">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {Array.from({ length: numStates }, (_, s) => (
+                      <SelectItem key={s} value={String(s)}>
+                        s{s + 1}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="grid md:grid-cols-2 gap-4">
+                <div>
+                  <div className="text-xs text-green-700 mb-1">action-independent: π(a|s) b(s) ∇logπ(a|s)</div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs border-collapse">
+                      <thead>
+                        <tr className="text-gray-500 border-b">
+                          <th className="text-left py-1">a</th>
+                          {independentMatrix[0]?.map((_, k) => (
+                            <th key={k} className="text-right py-1">k={k}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {independentMatrix.map((row, a) => (
+                          <tr key={a} className="border-b border-gray-100">
+                            <td className="py-1 font-mono">{ACTION_NAMES[a]}</td>
+                            {row.map((v, k) => (
+                              <td key={k} className="text-right py-1 font-mono">
+                                {Math.abs(v) < 1e-9 ? '0' : v.toExponential(1)}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-red-700 mb-1">action-dependent: π(a|s) Q(s,a) ∇logπ(a|s)</div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs border-collapse">
+                      <thead>
+                        <tr className="text-gray-500 border-b">
+                          <th className="text-left py-1">a</th>
+                          {dependentMatrix[0]?.map((_, k) => (
+                            <th key={k} className="text-right py-1">k={k}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {dependentMatrix.map((row, a) => (
+                          <tr key={a} className="border-b border-gray-100">
+                            <td className="py-1 font-mono">{ACTION_NAMES[a]}</td>
+                            {row.map((v, k) => (
+                              <td key={k} className="text-right py-1 font-mono">
+                                {Math.abs(v) < 1e-9 ? '0' : v.toExponential(1)}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+
+              <div className="border-t pt-3">
+                <div className="text-xs text-gray-700 mb-1">
+                  全状态参数分量求和 Σ_a π(a|s) score(s,a)[k] b(s,a)
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs border-collapse">
+                    <thead>
+                      <tr className="text-gray-500 border-b">
+                        <th className="text-left py-1">s</th>
+                        {independentCheck.perStateComponentSum[0]?.map((_, k) => (
+                          <th key={k} className="text-right py-1">k={k}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {independentCheck.perStateComponentSum.map((indepRow, s) => {
+                        const depRow = dependentCheck.perStateComponentSum[s];
+                        return (
+                          <tr key={s} className="border-b border-gray-100">
+                            <td className="py-1 font-mono">s{s + 1}</td>
+                            {indepRow.map((iv, k) => {
+                              const dv = depRow?.[k] ?? 0;
+                              const isZero = Math.abs(iv) < 1e-9;
+                              const isNonZero = Math.abs(dv) > 1e-9;
+                              return (
+                                <td key={k} className="text-right py-1 font-mono">
+                                  <span className={isZero ? 'text-green-700' : ''}>
+                                    {isZero ? '0' : iv.toExponential(1)}
+                                  </span>
+                                  {' / '}
+                                  <span className={isNonZero ? 'text-red-700' : ''}>
+                                    {isNonZero ? dv.toExponential(1) : '0'}
+                                  </span>
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="flex gap-4 text-xs mt-1">
+                  <span className="text-green-700">绿色：action-independent baseline</span>
+                  <span className="text-red-700">红色：action-dependent baseline</span>
+                </div>
+              </div>
+
+              <p className="text-xs text-gray-600">
+                矩阵每一行对应一个动作 a，每一列对应一个策略参数分量 k。对 softmax 策略，action-independent baseline 的列和（按动作求和）恒为 0；
+                action-dependent baseline（如 Q）的列和通常不为 0。
+              </p>
+            </CardContent>
+          </Card>
+          <MetricPanel result={result} />
         </div>
         <div className="space-y-4">
           <Card>
@@ -781,15 +945,22 @@ function BaselineAdvantageDemo() {
             </CardHeader>
             <CardContent className="text-sm text-gray-700 space-y-2">
               <p>
-                任何不依赖当前动作的 baseline b(s) 都满足
-                <KaTeX math={String.raw`\sum_a \pi(a|s) \nabla\log\pi(a|s) b(s) = 0`} display={false} />
-                ，因此不改变期望策略梯度。
+                动作无关的 baseline 不改变期望策略梯度。
+                合适的状态价值 baseline 和 bootstrap 通常可以降低方差，
+                但 Critic 不准确时会引入估计误差，方差下降并非无条件保证。
               </p>
               <p>
-                用 TD error 替代回报作为 Actor 权重，相当于把 baseline 设为了状态值函数，从而降低方差。
+                1. 若 baseline 与动作无关，b(s) 可提到求和号外：
+                <KaTeX math={String.raw`\sum_a \pi(a|s) \nabla\log\pi(a|s) b(s) = b(s) \sum_a \pi(a|s) \nabla\log\pi(a|s) = 0`} display={false} />
+                。
               </p>
               <p>
-                但 TD error 只有在 Critic 准确时才是 advantage 的无偏估计；训练初期它带有明显的估计噪声。
+                2. 若 baseline 与动作相关，b(s,a) 不能提出，期望项通常不为 0：
+                <KaTeX math={String.raw`\sum_a \pi(a|s) \nabla\log\pi(a|s) b(s,a) \neq 0`} display={false} />
+                。
+              </p>
+              <p>
+                下面矩阵显示每个状态、每个策略参数分量的求和结果。
               </p>
             </CardContent>
           </Card>
@@ -808,9 +979,13 @@ function BaselineAdvantageDemo() {
 }
 
 function ExactAdvantagePanel({ config }: { config: GridWorldConfig }) {
+  const numStates = config.rows * config.cols;
+  const nonTerminalStates = useMemo(
+    () => Array.from({ length: numStates }, (_, s) => s).filter((s) => !isTerminal(s, config)),
+    [numStates, config]
+  );
   const [state, setState] = useState(0);
   const [action, setAction] = useState<Action>(1);
-  const numStates = config.rows * config.cols;
 
   const uniformPolicy = useMemo(
     () => Array.from({ length: numStates }, () => Array.from({ length: 5 }, () => 1 / 5)),
@@ -818,25 +993,20 @@ function ExactAdvantagePanel({ config }: { config: GridWorldConfig }) {
   );
   const trueV = useMemo(() => solveStateValues(uniformPolicy, config), [uniformPolicy, config]);
   const trueQ = useMemo(() => computeQValues(trueV, config), [trueV, config]);
-  const trueAdvantage = trueQ[state][action] - trueV[state];
+  const trueAdvantage = trueQ[state]?.[action] - trueV[state];
 
-  const estimated = useMemo(() => {
-    const samples: number[] = [];
-    for (let seed = 1; seed <= 300; seed++) {
-      const res = a2c(config, { seed, horizonH: 1, actorAlpha: 0, criticAlpha: 0, episodes: 1 });
-      const u = res.updates.find((up) => up.state === state && up.action === action);
-      if (u) {
-        const bootstrap = u.done ? 0 : trueV[u.nextState];
-        samples.push(u.reward + config.gamma * bootstrap - trueV[state]);
+  const estimateResult = useMemo(() => {
+    try {
+      const rng = mulberry32(42);
+      const est = sampleTdErrorAtStateAction({ config, state, action, values: trueV, rng });
+      if (est.count === 0) {
+        return { ok: false as const, error: 'Cannot sample TD error: state is terminal or no valid transition available.' };
       }
+      return { ok: true as const, est };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
     }
-    return samples;
   }, [config, state, action, trueV]);
-
-  const mean = estimated.length ? estimated.reduce((a, b) => a + b, 0) / estimated.length : 0;
-  const std = estimated.length
-    ? Math.sqrt(estimated.reduce((s, v) => s + (v - mean) ** 2, 0) / estimated.length)
-    : 0;
 
   return (
     <Card>
@@ -852,7 +1022,7 @@ function ExactAdvantagePanel({ config }: { config: GridWorldConfig }) {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {Array.from({ length: numStates }, (_, s) => (
+                {nonTerminalStates.map((s) => (
                   <SelectItem key={s} value={String(s)}>
                     s{s + 1}
                   </SelectItem>
@@ -876,22 +1046,37 @@ function ExactAdvantagePanel({ config }: { config: GridWorldConfig }) {
             </Select>
           </div>
         </div>
-        <div className="grid grid-cols-3 gap-3">
-          <div className="bg-gray-50 rounded p-2">
-            <div className="text-gray-500 text-xs">真实 A_π(s,a)</div>
-            <div className="font-mono">{trueAdvantage.toFixed(4)}</div>
+        {estimateResult.ok ? (
+          <>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="bg-gray-50 rounded p-2">
+                <div className="text-gray-500 text-xs">真实 A_π(s,a)</div>
+                <div className="font-mono">{trueAdvantage.toFixed(4)}</div>
+              </div>
+              <div className="bg-gray-50 rounded p-2">
+                <div className="text-gray-500 text-xs">样本 δ 均值</div>
+                <div className="font-mono">{estimateResult.est.mean.toFixed(4)}</div>
+              </div>
+              <div className="bg-gray-50 rounded p-2">
+                <div className="text-gray-500 text-xs">样本 δ 标准差</div>
+                <div className="font-mono">{estimateResult.est.std.toFixed(4)}</div>
+              </div>
+              <div className="bg-gray-50 rounded p-2">
+                <div className="text-gray-500 text-xs">绝对误差</div>
+                <div className="font-mono">
+                  {Math.abs(estimateResult.est.mean - trueAdvantage).toFixed(4)}
+                </div>
+              </div>
+            </div>
+            <div className="text-xs text-gray-600">sample count: {estimateResult.est.count}</div>
+          </>
+        ) : (
+          <div className="text-red-600 bg-red-50 p-3 rounded-lg border border-red-200 text-sm">
+            {estimateResult.error}
           </div>
-          <div className="bg-gray-50 rounded p-2">
-            <div className="text-gray-500 text-xs">样本 δ 均值</div>
-            <div className="font-mono">{mean.toFixed(4)}</div>
-          </div>
-          <div className="bg-gray-50 rounded p-2">
-            <div className="text-gray-500 text-xs">样本 δ 标准差</div>
-            <div className="font-mono">{std.toFixed(4)}</div>
-          </div>
-        </div>
+        )}
         <p className="text-xs text-gray-600">
-          用真实 V_π 作为 Critic，对 (s,a) 重复采样得到 TD error。其样本均值应接近真实 advantage，但有限样本存在随机波动。
+          用真实 V_π 作为 Critic，从指定 (s,a) 直接执行一步得到 TD error。确定性环境下标准差为 0，样本均值应等于真实 advantage。
         </p>
       </CardContent>
     </Card>
@@ -924,7 +1109,6 @@ function A2cDemo() {
   );
   const [step, setStep] = useState(0);
   const record = result.updates[Math.min(step, result.updates.length - 1)];
-  const metricSeries = useMemo(() => computeMetricSeries(result), [result]);
 
   const values = record?.vAfter ?? new Array(config.rows * config.cols).fill(0);
   const policy = record?.actorFullPolicyAfter ?? Array.from({ length: config.rows * config.cols }, () => Array.from({ length: 5 }, () => 1 / 5));
@@ -964,12 +1148,29 @@ v(S_t) &\leftarrow v(S_t) + \alpha_w \delta_t \\
                 </CardContent>
               </Card>
               <div className="bg-gray-50 rounded-xl p-4 border border-gray-200">
-                <GridWorld config={config} policy={policy} values={values} showValues className="max-w-full" />
-                <p className="mt-2 text-xs text-gray-600">蓝色高亮为当前状态，红色高亮为当前动作。</p>
+                <GridWorld
+                  config={config}
+                  policy={policy}
+                  values={values}
+                  showValues
+                  highlightState={record.state}
+                  highlightNextState={record.nextState}
+                  highlightAction={{ state: record.state, action: record.action }}
+                  highlightUpdatedState={record.state}
+                  className="max-w-full"
+                />
+                <div className="mt-2 flex flex-wrap gap-3 text-xs text-gray-600">
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-[#3a7bd5]" /> current S_t</span>
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-[#f59e0b]" /> next S_{'{t+1}'}</span>
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-[#22c55e]" /> updated state</span>
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-[#1a3a5c]" /> current action</span>
+                  {record.done && <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-green-200" /> natural terminal</span>}
+                  {record.truncated && <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-amber-200" /> horizon truncated</span>}
+                </div>
               </div>
             </>
           )}
-          <MetricPanel series={metricSeries} diverged={result.diverged} divergenceStep={result.divergenceStep} />
+          <MetricPanel result={result} />
         </div>
         <div className="space-y-4">
           <Card>
@@ -1046,7 +1247,6 @@ function OffPolicyDemo() {
 
   const [step, setStep] = useState(0);
   const record = result ? result.updates[Math.min(step, result.updates.length - 1)] : undefined;
-  const metricSeries = useMemo(() => (result ? computeMetricSeries(result) : []), [result]);
 
   const values = useMemo(() => {
     if (!record) return new Array(config.rows * config.cols).fill(0);
@@ -1122,7 +1322,25 @@ function OffPolicyDemo() {
                 </CardContent>
               </Card>
               <div className="bg-gray-50 rounded-xl p-4 border border-gray-200">
-                <GridWorld config={config} policy={policy} values={values} showValues className="max-w-full" />
+                <GridWorld
+                  config={config}
+                  policy={policy}
+                  values={values}
+                  showValues
+                  highlightState={record.state}
+                  highlightNextState={record.nextState}
+                  highlightAction={{ state: record.state, action: record.action }}
+                  highlightUpdatedState={record.state}
+                  className="max-w-full"
+                />
+                <div className="mt-2 flex flex-wrap gap-3 text-xs text-gray-600">
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-[#3a7bd5]" /> current S_t</span>
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-[#f59e0b]" /> next S_{'{t+1}'}</span>
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-[#22c55e]" /> updated state</span>
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-[#1a3a5c]" /> current action</span>
+                  {record.done && <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-green-200" /> natural terminal</span>}
+                  {record.truncated && <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-amber-200" /> horizon truncated</span>}
+                </div>
               </div>
               {rhoStats && (
                 <Card>
@@ -1139,7 +1357,7 @@ function OffPolicyDemo() {
                       <div className="font-mono">{rhoStats.meanRho.toFixed(2)}</div>
                     </div>
                     <div className="bg-gray-50 rounded p-2">
-                      <div className="text-gray-500 text-xs">clipped (ρ&gt;10)</div>
+                      <div className="text-gray-500 text-xs">ρ&gt;10 样本比例（未 clip）</div>
                       <div className="font-mono">{(rhoStats.clipped * 100).toFixed(1)}%</div>
                     </div>
                     <div className="bg-gray-50 rounded p-2">
@@ -1151,7 +1369,7 @@ function OffPolicyDemo() {
               )}
             </>
           )}
-          {result && <MetricPanel series={metricSeries} diverged={result.diverged} divergenceStep={result.divergenceStep} />}
+          {result && <MetricPanel result={result} />}
         </div>
         <div className="space-y-4">
           <Card>
@@ -1222,6 +1440,10 @@ function DeterministicAcDemo() {
   const [episodeCount, setEpisodeCount] = useState(0);
   const [history, setHistory] = useState<DeterministicACStep[]>([]);
   const [step, setStep] = useState(0);
+  const [diverged, setDiverged] = useState(false);
+  const [divergenceStep, setDivergenceStep] = useState<number | undefined>();
+  const [divergenceReason, setDivergenceReason] = useState<string | undefined>();
+  const [largeMagnitudeWarning, setLargeMagnitudeWarning] = useState<{ step: number; reason: string } | undefined>();
 
   const env = {
     step: (state: number, action: number) => {
@@ -1273,6 +1495,10 @@ function DeterministicAcDemo() {
     setHistory(res.steps);
     setStep(0);
     setEpisodeCount((c) => c + 1);
+    setDiverged(res.diverged);
+    setDivergenceStep(res.divergenceStep);
+    setDivergenceReason(res.divergenceReason);
+    setLargeMagnitudeWarning(res.largeMagnitudeWarning);
   }
 
   function reset() {
@@ -1282,6 +1508,10 @@ function DeterministicAcDemo() {
     setEpisodeCount(0);
     setHistory([]);
     setStep(0);
+    setDiverged(false);
+    setDivergenceStep(undefined);
+    setDivergenceReason(undefined);
+    setLargeMagnitudeWarning(undefined);
   }
 
   const currentStep = history[Math.min(step, history.length - 1)];
@@ -1308,6 +1538,19 @@ function DeterministicAcDemo() {
             description="这不是 DDPG：没有 replay buffer、target network 或 soft update，仅用于理解确定性 Actor 如何沿 Critic 梯度移动。"
           />
 
+          {diverged && (
+            <div className="flex items-center gap-2 text-red-600 bg-red-50 p-3 rounded-lg border border-red-200 text-sm">
+              <AlertTriangle className="w-4 h-4" />
+              数值异常已停止（约第 {divergenceStep} 步）
+              {divergenceReason ? `：${divergenceReason}` : ''}。
+            </div>
+          )}
+          {largeMagnitudeWarning && !diverged && (
+            <div className="flex items-center gap-2 text-amber-600 bg-amber-50 p-3 rounded-lg border border-amber-200 text-sm">
+              <AlertTriangle className="w-4 h-4" />
+              第 {largeMagnitudeWarning.step} 步出现大数值：{largeMagnitudeWarning.reason}。
+            </div>
+          )}
           <div className="bg-gray-50 rounded-xl p-4 border border-gray-200">
             <div className="text-sm text-gray-600 mb-2">固定状态 s = {stateForPlot.toFixed(1)} 下的 Critic Q(s,a)</div>
             <svg width={360} height={220} className="bg-white rounded-lg border border-gray-200 w-full">
@@ -1346,12 +1589,26 @@ function DeterministicAcDemo() {
                     <div className="font-mono">{currentStep.state.toFixed(3)}</div>
                   </div>
                   <div className="bg-gray-50 rounded p-2">
-                    <div className="text-gray-500 text-xs">a = μ(s)</div>
-                    <div className="font-mono">{currentStep.action.toFixed(3)}</div>
+                    <div className="text-gray-500 text-xs">μ(s) actor action</div>
+                    <div className="font-mono">{currentStep.actorAction.toFixed(3)}</div>
+                  </div>
+                  <div className="bg-gray-50 rounded p-2">
+                    <div className="text-gray-500 text-xs">behavior action</div>
+                    <div className="font-mono">{currentStep.behaviorAction.toFixed(3)}</div>
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="bg-gray-50 rounded p-2">
+                    <div className="text-gray-500 text-xs">exploration noise</div>
+                    <div className="font-mono">{currentStep.explorationNoise.toFixed(4)}</div>
                   </div>
                   <div className="bg-gray-50 rounded p-2">
                     <div className="text-gray-500 text-xs">r</div>
                     <div className="font-mono">{currentStep.reward.toFixed(4)}</div>
+                  </div>
+                  <div className="bg-gray-50 rounded p-2">
+                    <div className="text-gray-500 text-xs">distance to target</div>
+                    <div className="font-mono">{Math.abs(currentStep.state).toFixed(4)}</div>
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
@@ -1368,16 +1625,16 @@ function DeterministicAcDemo() {
                     <div className="font-mono font-semibold">{currentStep.tdError.toFixed(4)}</div>
                   </div>
                   <div className="bg-gray-50 rounded p-2">
-                    <div className="text-gray-500 text-xs">critic loss</div>
-                    <div className="font-mono">{(currentStep.tdError * currentStep.tdError).toFixed(4)}</div>
+                    <div className="text-gray-500 text-xs">critic loss ½δ²</div>
+                    <div className="font-mono">{currentStep.criticLoss.toFixed(4)}</div>
                   </div>
                   <div className="bg-gray-50 rounded p-2">
-                    <div className="text-gray-500 text-xs">∂Q/∂a</div>
+                    <div className="text-gray-500 text-xs">∂Q/∂a at a=μ(s)</div>
                     <div className="font-mono">{currentStep.dqda.toFixed(4)}</div>
                   </div>
                   <div className="bg-gray-50 rounded p-2">
-                    <div className="text-gray-500 text-xs">distance to target</div>
-                    <div className="font-mono">{Math.abs(currentStep.state).toFixed(4)}</div>
+                    <div className="text-gray-500 text-xs">Critic weights for Actor</div>
+                    <div className="font-mono">{currentStep.criticWeightsUsedByActor}</div>
                   </div>
                 </div>
                 <div className="bg-gray-50 rounded p-2">
@@ -1386,6 +1643,9 @@ function DeterministicAcDemo() {
                     [{currentStep.actorGradient.map((g) => g.toFixed(4)).join(', ')}]
                   </div>
                 </div>
+                <p className="text-xs text-gray-600">
+                  μ_θ(s) + exploration noise = executed action。Actor 梯度在 a = μ_θ(s) 处计算；Critic 使用实际执行的 behaviorAction 更新。
+                </p>
               </CardContent>
             </Card>
           )}
