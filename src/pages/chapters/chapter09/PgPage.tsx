@@ -37,9 +37,11 @@ import {
   reinforceWithBaseline,
   reinforceMDP,
   computePolicyMetrics,
-  compareBaselineVariance,
+  compareMultipleBaselines,
   checkDiscountGradientComponent,
   checkDiscountGradientOverGamma,
+  computeDiscountOccupancy,
+  computeStationaryDistribution,
   computeAverageRewardMetrics,
   type PGFeatureMode,
   type PGUpdateRecord,
@@ -782,6 +784,13 @@ function DiscountedPGDemo() {
     [theta, config, d0, parameterAction, parameterState]
   );
 
+  const occupancyL1 = useMemo(() => {
+    const policy = policyTable(theta, 'onehot', config);
+    const rho = computeDiscountOccupancy(policy, config, d0, gamma);
+    const { d } = computeStationaryDistribution(policy, config);
+    return rho.reduce((sum, val, s) => sum + Math.abs((1 - gamma) * val - d[s]), 0);
+  }, [theta, config, d0, gamma]);
+
   function updateTheta(action: number, state: number, value: number) {
     setTheta((prev) =>
       prev.map((row, a) =>
@@ -832,6 +841,13 @@ function DiscountedPGDemo() {
                   math={String.raw`\nabla \bar{v}_\pi \approx \frac{1}{1-\gamma} \mathbb{E}_{S\sim d_\pi, A\sim\pi}\left[\nabla\log\pi(A|S)\, q_\pi(S,A)\right]`}
                   display={false}
                 />
+              </p>
+              <p className="text-xs text-gray-600">
+                在策略诱导的 Markov 链遍历并具有唯一平稳分布的条件下，归一化折扣占用度量
+                <KaTeX math={String.raw`(1-\gamma)\rho_\pi`} display={false} />
+                会在 γ→1 时趋近平稳分布
+                <KaTeX math={String.raw`d_\pi`} display={false} />
+                。有限数值实验中的单个梯度分量误差不保证逐点单调下降。
               </p>
             </CardContent>
           </Card>
@@ -907,16 +923,23 @@ function DiscountedPGDemo() {
               </div>
             </div>
 
-            <div className="bg-gray-50 rounded p-3 border border-gray-200">
-              <div className="text-gray-500 text-xs">ρ_π 总和</div>
-              <div className="font-mono font-semibold">
-                {check.rhoSum.toFixed(4)} / {check.expectedRhoSum.toFixed(4)} = 1/(1−γ)
+            <div className="grid md:grid-cols-2 gap-3">
+              <div className="bg-gray-50 rounded p-3 border border-gray-200">
+                <div className="text-gray-500 text-xs">ρ_π 总和</div>
+                <div className="font-mono font-semibold">
+                  {check.rhoSum.toFixed(4)} / {check.expectedRhoSum.toFixed(4)} = 1/(1−γ)
+                </div>
+              </div>
+              <div className="bg-gray-50 rounded p-3 border border-gray-200">
+                <div className="text-gray-500 text-xs">‖(1−γ)ρ_π − d_π‖₁</div>
+                <div className="font-mono font-semibold">{occupancyL1.toExponential(4)}</div>
               </div>
             </div>
 
             <p>
               ρ_π 满足 <KaTeX math={String.raw`\rho^\top = d_0^\top (I - \gamma P_\pi)^{-1}`} display={false} />，
               是未归一化的 discounted occupancy measure，其元素和为 1/(1−γ)，不应简单称为概率分布。
+              当 γ→1 时，<KaTeX math={String.raw`(1-\gamma)\rho_\pi`} display={false} /> 与平稳分布 d_π 的 L₁ 距离通常会缩小，但单个梯度分量的近似误差仍可能波动。
             </p>
 
             <div className="bg-gray-50 rounded-xl p-4 border border-gray-200">
@@ -965,6 +988,7 @@ function AveragePGDemo() {
   const config = DEFAULT_CONFIG;
   const [policyMode, setPolicyMode] = useState<'uniform' | 'goal'>('goal');
   const [horizon, setHorizon] = useState(50);
+  const [numSeeds, setNumSeeds] = useState(20);
 
   const theta = useMemo(() => {
     if (policyMode === 'uniform') return zeroThetaForMode('onehot', config);
@@ -972,16 +996,34 @@ function AveragePGDemo() {
   }, [policyMode, config]);
 
   const policy = useMemo(() => policyTable(theta, 'onehot', config), [theta, config]);
-  const avg = useMemo(() => computeAverageRewardMetrics(policy, config, horizon), [policy, config, horizon]);
+  const avg = useMemo(
+    () => computeAverageRewardMetrics(policy, config, horizon, 1),
+    [policy, config, horizon]
+  );
 
   const cumulativeData = useMemo(() => {
-    const len = Math.max(avg.ordinaryCumulative.length, avg.differentialCumulative.length);
-    return Array.from({ length: len }, (_, t) => ({
-      step: t + 1,
-      ordinary: avg.ordinaryCumulative[t] ?? null,
-      differential: avg.differentialCumulative[t] ?? null,
-    }));
-  }, [avg]);
+    const runs = Array.from({ length: numSeeds }, (_, i) =>
+      computeAverageRewardMetrics(policy, config, horizon, i + 1)
+    );
+    const len = Math.max(...runs.map((r) => Math.max(r.ordinaryCumulative.length, r.differentialCumulative.length)), 1);
+    return Array.from({ length: len }, (_, t) => {
+      const ordinary = runs.map((r) => r.ordinaryCumulative[t] ?? r.ordinaryCumulative[r.ordinaryCumulative.length - 1] ?? 0);
+      const differential = runs.map((r) => r.differentialCumulative[t] ?? r.differentialCumulative[r.differentialCumulative.length - 1] ?? 0);
+      const meanOrd = ordinary.reduce((a, b) => a + b, 0) / ordinary.length;
+      const meanDiff = differential.reduce((a, b) => a + b, 0) / differential.length;
+      const stdOrd = Math.sqrt(ordinary.reduce((s, v) => s + (v - meanOrd) ** 2, 0) / ordinary.length);
+      const stdDiff = Math.sqrt(differential.reduce((s, v) => s + (v - meanDiff) ** 2, 0) / differential.length);
+      return {
+        step: t + 1,
+        ordinaryMean: meanOrd,
+        ordinaryUpper: meanOrd + stdOrd,
+        ordinaryLower: meanOrd - stdOrd,
+        differentialMean: meanDiff,
+        differentialUpper: meanDiff + stdDiff,
+        differentialLower: meanDiff - stdDiff,
+      };
+    });
+  }, [policy, config, horizon, numSeeds]);
 
   return (
     <InteractiveDemo title="9.3 非折扣（平均奖励）情形的策略梯度定理">
@@ -1030,6 +1072,10 @@ function AveragePGDemo() {
                 <div className="text-sm text-gray-600 mb-1">模拟长度</div>
                 {paramSlider(horizon, setHorizon, 10, 200, 10)}
               </div>
+              <div className="w-40">
+                <div className="text-sm text-gray-600 mb-1">轨迹种子数</div>
+                {paramSlider(numSeeds, setNumSeeds, 1, 50, 1)}
+              </div>
             </div>
 
             <div className="grid md:grid-cols-4 gap-3">
@@ -1058,16 +1104,20 @@ function AveragePGDemo() {
                 xLabel="步数"
                 yLabel="累计奖励"
                 series={[
-                  { key: 'ordinary', name: '普通累计 ΣR', color: '#2563eb' },
-                  { key: 'differential', name: '差分累计 Σ(R−r̄)', color: '#22c55e' },
+                  { key: 'ordinaryMean', name: '普通累计 mean', color: '#2563eb' },
+                  { key: 'ordinaryUpper', name: '普通累计 +1σ', color: '#93c5fd' },
+                  { key: 'ordinaryLower', name: '普通累计 −1σ', color: '#93c5fd' },
+                  { key: 'differentialMean', name: '差分累计 mean', color: '#22c55e' },
+                  { key: 'differentialUpper', name: '差分累计 +1σ', color: '#86efac' },
+                  { key: 'differentialLower', name: '差分累计 −1σ', color: '#86efac' },
                 ]}
                 height={180}
               />
             </div>
 
             <p>
-              普通累计奖励通常会随长度增长而漂移；减去平均奖励 r̄_π 后，差分累计围绕零波动，
-              这正是差分价值有意义的原因。
+              差分奖励在平稳分布下的长期期望为零，但单条有限轨迹仍可能出现明显波动和暂时漂移。
+              图中显示 {numSeeds} 条轨迹的均值 ± 标准差：普通累计随长度线性漂移，差分累计的长期趋势趋于零。
             </p>
           </CardContent>
         </Card>
@@ -1420,8 +1470,8 @@ function BaselineBridgeDemo() {
 
   const banditTheta = [0.1, 0.5, -0.2, 0, 0];
   const actionRewards = [1, 3, 2, 1.5, 0.5];
-  const varianceResult = useMemo(
-    () => compareBaselineVariance(banditTheta, actionRewards, baseline, numSeeds),
+  const baselineComparison = useMemo(
+    () => compareMultipleBaselines(banditTheta, actionRewards, baseline, numSeeds),
     [baseline, numSeeds]
   );
 
@@ -1500,45 +1550,42 @@ function BaselineBridgeDemo() {
                 {paramSlider(numSeeds, setNumSeeds, 10, 200, 10)}
               </div>
             </div>
+            <FormulaCard
+              title="Score-weighted optimal scalar baseline"
+              formula={
+                <KaTeX
+                  math={String.raw`b^* = \frac{\mathbb{E}\left[ G \|\nabla\log\pi(A)\|^2 \right]}{\mathbb{E}\left[ \|\nabla\log\pi(A)\|^2 \right]}`}
+                  display
+                />
+              }
+              description="b* 是在标量基线类里最小化梯度估计 trace covariance 的闭式解。"
+            />
             <div className="overflow-x-auto">
               <table className="w-full text-sm text-left">
                 <thead className="text-gray-500 border-b">
                   <tr>
-                    <th>分量</th>
-                    <th>均值（无基线）</th>
-                    <th>均值（有基线）</th>
-                    <th>方差（无基线）</th>
-                    <th>方差（有基线）</th>
-                    <th>标准差（无基线）</th>
-                    <th>标准差（有基线）</th>
+                    <th>基线方法</th>
+                    <th>b</th>
+                    <th>平均梯度范数</th>
+                    <th>Trace covariance</th>
+                    <th>梯度范数方差</th>
                   </tr>
                 </thead>
                 <tbody className="text-gray-700">
-                  {varianceResult.meanNoBaseline.map((_, i) => (
+                  {baselineComparison.methods.map((m, i) => (
                     <tr key={i} className="border-b last:border-0">
-                      <td>{ACTION_NAMES[i]}</td>
-                      <td className="font-mono">{varianceResult.meanNoBaseline[i].toFixed(4)}</td>
-                      <td className="font-mono">{varianceResult.meanBaseline[i].toFixed(4)}</td>
-                      <td className="font-mono">{varianceResult.varNoBaseline[i].toFixed(4)}</td>
-                      <td className="font-mono">{varianceResult.varBaseline[i].toFixed(4)}</td>
-                      <td className="font-mono">{varianceResult.stdNoBaseline[i].toFixed(4)}</td>
-                      <td className="font-mono">{varianceResult.stdBaseline[i].toFixed(4)}</td>
+                      <td>{m.name}</td>
+                      <td className="font-mono">{m.baseline.toFixed(4)}</td>
+                      <td className="font-mono">{m.meanNorm.toFixed(4)}</td>
+                      <td className="font-mono">{m.traceCov.toFixed(4)}</td>
+                      <td className="font-mono">{m.varNorm.toFixed(4)}</td>
                     </tr>
                   ))}
-                  <tr className="border-t-2 font-semibold">
-                    <td>总梯度范数</td>
-                    <td className="font-mono">{varianceResult.meanNormNoBaseline.toFixed(4)}</td>
-                    <td className="font-mono">{varianceResult.meanNormBaseline.toFixed(4)}</td>
-                    <td className="font-mono">{varianceResult.varNormNoBaseline.toFixed(4)}</td>
-                    <td className="font-mono">{varianceResult.varNormBaseline.toFixed(4)}</td>
-                    <td className="font-mono">{Math.sqrt(varianceResult.varNormNoBaseline).toFixed(4)}</td>
-                    <td className="font-mono">{Math.sqrt(varianceResult.varNormBaseline).toFixed(4)}</td>
-                  </tr>
                 </tbody>
               </table>
             </div>
             <p className="text-xs text-gray-600">
-              两种估计器理论均值相同，是因为 action-independent baseline 项的动作期望为零。共同随机数只用于降低有限样本比较中两种估计量差值的噪声。适当基线通常降低方差，但任意基线不保证降低每个梯度分量的方差。
+              Trace covariance = E‖g − E[g]‖² = Σᵢ Var(gᵢ)。四种基线（无基线、用户基线、平均回报基线、b*）理论均值相同，因为 action-independent baseline 项的动作期望为零。b* 在标量基线中最小化 trace covariance，但不保证降低每个分量的方差。
             </p>
           </CardContent>
         </Card>

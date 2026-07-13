@@ -920,7 +920,8 @@ export interface AverageRewardMetrics {
 export function computeAverageRewardMetrics(
   policy: Policy,
   config: GridWorldConfig,
-  horizon = 50
+  horizon = 50,
+  seed = 1
 ): AverageRewardMetrics {
   const numStates = config.rows * config.cols;
   const rPi = policy.map((dist, s) => expectedImmediateReward(s, dist, config));
@@ -967,7 +968,7 @@ export function computeAverageRewardMetrics(
   );
 
   // Simulate one trajectory from start for ordinary vs differential cumulative rewards.
-  const rng = mulberry32(1); // fixed seed for illustration
+  const rng = mulberry32(seed);
   let state = config.startState;
   const ordinaryCumulative: number[] = [];
   const differentialCumulative: number[] = [];
@@ -1094,4 +1095,84 @@ export function compareBaselineVariance(
     varNormNoBaseline: normStatsNoBaseline.variance,
     varNormBaseline: normStatsBaseline.variance,
   };
+}
+
+export interface BaselineMethodStats {
+  name: string;
+  baseline: number;
+  meanGradient: number[];
+  traceCov: number;
+  meanNorm: number;
+  varNorm: number;
+}
+
+export interface BaselineComparisonResult {
+  methods: BaselineMethodStats[];
+}
+
+/**
+ * Compare no baseline, a user baseline, the mean-return baseline, and the
+ * score-weighted optimal scalar baseline
+ *   b* = E[G ||score||^2] / E[||score||^2]
+ *
+ * Trace covariance = E ||g - E[g]||^2 = sum_i Var(g_i).
+ */
+export function compareMultipleBaselines(
+  theta: number[],
+  actionRewards: number[],
+  userBaseline: number,
+  numSeeds: number,
+  rewardNoiseStd = 0.5
+): BaselineComparisonResult {
+  const dim = theta.length;
+  const samples: { reward: number; score: number[]; scoreNormSq: number }[] = [];
+
+  for (let seed = 1; seed <= numSeeds; seed++) {
+    const rng = mulberry32(seed);
+    const policy = softmaxPolicy(theta);
+    const action = sampleActionWithRng(policy, rng);
+    const r = actionRewards[action] + (rng() * 2 - 1) * rewardNoiseStd;
+    const score = softmaxScoreGradient(policy, action);
+    const scoreNormSq = score.reduce((s, x) => s + x * x, 0);
+    samples.push({ reward: r, score, scoreNormSq });
+  }
+
+  const meanReward = samples.reduce((s, x) => s + x.reward, 0) / samples.length;
+  const bStar =
+    samples.reduce((s, x) => s + x.reward * x.scoreNormSq, 0) /
+    samples.reduce((s, x) => s + x.scoreNormSq, 0);
+
+  const configs = [
+    { name: '无基线', baseline: 0 },
+    { name: '用户基线', baseline: userBaseline },
+    { name: '平均回报基线', baseline: meanReward },
+    { name: '最优标量基线 b*', baseline: bStar },
+  ];
+
+  const methods = configs.map(({ name, baseline }) => {
+    const grads = samples.map(({ reward, score }) => score.map((s) => (reward - baseline) * s));
+    const meanGradient = new Array(dim).fill(0);
+    grads.forEach((g) => g.forEach((v, i) => (meanGradient[i] += v)));
+    meanGradient.forEach((_, i) => (meanGradient[i] /= grads.length));
+
+    const traceCov = meanGradient.reduce((sum, _m, i) => {
+      const mean = meanGradient[i];
+      const variance = grads.reduce((s, g) => s + (g[i] - mean) ** 2, 0) / grads.length;
+      return sum + variance;
+    }, 0);
+
+    const norms = grads.map((g) => vectorNorm(g));
+    const normStats = meanAndVar(norms);
+
+    return {
+      name,
+      baseline,
+      meanGradient,
+      traceCov,
+      meanNorm: normStats.mean,
+      varNorm: normStats.variance,
+    };
+  });
+
+  return { methods };
 }
