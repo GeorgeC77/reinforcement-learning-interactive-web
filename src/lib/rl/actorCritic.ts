@@ -14,6 +14,8 @@ import {
   step,
   sampleActionWithRng,
   isTerminal,
+  stochasticTransition,
+  solveLinearSystem,
 } from './gridworld';
 
 export type ACFrame = ACUpdateRecord;
@@ -57,6 +59,15 @@ export interface ACUpdateRecord {
   targetProb?: number;
   behaviorProb?: number;
   rho?: number;
+  rawRho?: number;
+  usedRho?: number;
+  wasClipped?: boolean;
+  /** Whether the update bootstrapped on a truncated (time-limit) transition. */
+  bootstrapUsed?: boolean;
+  /** Expected bootstrap value for Q-based off-policy target. */
+  expectedBootstrap?: number;
+  /** QAC actor weight mode used for this update. */
+  actorWeightMode?: 'raw-q' | 'advantage';
 }
 
 export interface ACEpisodeRecord {
@@ -89,6 +100,14 @@ export interface ACOptions {
   criticAlpha: number;
   episodes: number;
   epsilon?: number;
+  /** If true (default), bootstrap at the artificial horizon truncation boundary. */
+  bootstrapOnTruncation?: boolean;
+  /** QAC only: use raw Q(s,a) or Q(s,a) - V_pi(s) as actor weight. */
+  actorWeightMode?: 'raw-q' | 'advantage';
+  /** Off-policy only: use raw importance ratios or clip them. */
+  importanceMode?: 'raw' | 'clipped';
+  /** Clipping threshold when importanceMode is 'clipped'. */
+  clipThreshold?: number;
 }
 
 function softmaxDistribution(preferences: number[]): number[] {
@@ -234,7 +253,8 @@ export interface ACMetricSeries {
   latestReturn: number;
   movingAverageReturn: number;
   overallAverageReturn: number;
-  meanEpisodeLength: number;
+  movingAverageEpisodeLength: number;
+  overallAverageEpisodeLength: number;
   success: number;
   successRate: number;
   signedMeanTdError: number;
@@ -279,9 +299,11 @@ export function computeACMetricSeries(
   const lengthMA = movingAverage(result.episodes.map((ep) => ep.episodeLength), window);
 
   let cumulativeReturnSum = 0;
+  let cumulativeLengthSum = 0;
 
   return result.episodes.map((ep, i) => {
     cumulativeReturnSum += ep.cumulativeReward;
+    cumulativeLengthSum += ep.episodeLength;
     const beforePolicy = i === 0 ? initialPolicy : policyAfterEpisode[i - 1];
     const afterPolicy = policyAfterEpisode[i];
     const ent =
@@ -300,7 +322,8 @@ export function computeACMetricSeries(
       latestReturn: ep.cumulativeReward,
       movingAverageReturn: returnMA[i],
       overallAverageReturn: cumulativeReturnSum / (i + 1),
-      meanEpisodeLength: lengthMA[i],
+      movingAverageEpisodeLength: lengthMA[i],
+      overallAverageEpisodeLength: cumulativeLengthSum / (i + 1),
       success: ep.success ? 1 : 0,
       successRate: successRateMA[i],
       signedMeanTdError: signedMean,
@@ -361,6 +384,84 @@ export function sampleTdErrorAtStateAction(options: {
   const bootstrap = transition.done ? 0 : values[transition.nextState];
   const tdError = transition.reward + config.gamma * bootstrap - values[state];
   return { samples: [tdError], mean: tdError, std: 0, count: 1 };
+}
+
+/** Solve Bellman equations for state values under a stochastic transition model. */
+function solveBellmanEquation(
+  rewardVector: number[],
+  transitionMatrix: number[][],
+  gamma: number
+): number[] {
+  const n = rewardVector.length;
+  // (I - gamma P) v = r
+  const a: number[][] = Array.from({ length: n }, (_, i) =>
+    transitionMatrix[i].map((p, j) => (i === j ? 1 - gamma * p : -gamma * p))
+  );
+  return solveLinearSystem(a, rewardVector);
+}
+
+/** Build policy-weighted rewards and transitions under the configured slip probability. */
+function policyWeightedStochasticDynamics(
+  policy: Policy,
+  config: GridWorldConfig,
+  slip: number
+): { rewardVector: number[]; transitionMatrix: number[][] } {
+  const n = config.rows * config.cols;
+  const rewardVector = new Array(n).fill(0);
+  const transitionMatrix = Array.from({ length: n }, () => new Array(n).fill(0));
+  for (let s = 0; s < n; s++) {
+    if (isTerminal(s, config)) continue;
+    for (let a = 0; a < policy[s].length; a++) {
+      const piA = policy[s][a];
+      if (piA === 0) continue;
+      const dist = stochasticTransition(s, a as Action, config, slip);
+      for (const { nextState, prob } of dist) {
+        const { reward } = step(s, a as Action, config);
+        rewardVector[s] += piA * prob * reward;
+        transitionMatrix[s][nextState] += piA * prob;
+      }
+    }
+  }
+  return { rewardVector, transitionMatrix };
+}
+
+/** Compute true state values under a policy with stochastic transitions. */
+export function solveStateValuesWithSlip(
+  policy: Policy,
+  config: GridWorldConfig,
+  slip: number
+): number[] {
+  const { rewardVector, transitionMatrix } = policyWeightedStochasticDynamics(
+    policy,
+    config,
+    slip
+  );
+  return solveBellmanEquation(rewardVector, transitionMatrix, config.gamma);
+}
+
+/** Compute true state-action Q-values under a policy with stochastic transitions. */
+export function computeQValuesWithSlip(
+  policy: Policy,
+  config: GridWorldConfig,
+  slip: number
+): number[][] {
+  const values = solveStateValuesWithSlip(policy, config, slip);
+  const n = config.rows * config.cols;
+  const q: number[][] = Array.from({ length: n }, () => new Array(policy[0]?.length ?? 5).fill(0));
+  for (let s = 0; s < n; s++) {
+    if (isTerminal(s, config)) continue;
+    for (let a = 0; a < q[s].length; a++) {
+      const dist = stochasticTransition(s, a as Action, config, slip);
+      let exp = 0;
+      for (const { nextState, prob } of dist) {
+        const { reward, done } = step(s, a as Action, config);
+        const bootstrap = done ? 0 : values[nextState];
+        exp += prob * (reward + config.gamma * bootstrap);
+      }
+      q[s][a] = exp;
+    }
+  }
+  return q;
 }
 
 /**
@@ -426,40 +527,30 @@ export function buildActionDependentBaseline(q: number[][]): number[][] {
   return q.map((row) => [...row]);
 }
 
-function buildUniformPolicy(numStates: number, numActions: number): Policy {
-  const dist = new Array(numActions).fill(1 / numActions);
-  return Array.from({ length: numStates }, () => [...dist]);
-}
-
-function extractPolicyTrajectory(
-  updates: ACUpdateRecord[],
-  episodes: ACEpisodeRecord[],
-  finalPolicy?: Policy
-): { initialPolicy: Policy; policyAfterEpisode: Policy[] } {
-  const numStates = episodes.length > 0 && updates[0] ? updates[0].actorFullPolicyBefore?.length ?? 0 : 0;
-  const numActions = episodes.length > 0 && updates[0] ? updates[0].actorFullPolicyBefore?.[0]?.length ?? 0 : 0;
-  const fallback = finalPolicy ?? (numStates > 0 ? buildUniformPolicy(numStates, numActions) : []);
-  const initialPolicy = updates[0]?.actorFullPolicyBefore ?? fallback;
-  const policyAfterEpisode = episodes.map((_, i) => {
-    const e = i + 1;
-    const last = updates.filter((u) => u.episode === e).pop();
-    return last?.actorFullPolicyAfter ?? fallback;
-  });
-  return { initialPolicy, policyAfterEpisode };
-}
-
 // ---------------------------------------------------------------------------
 // QAC: Q-function Actor-Critic
 // ---------------------------------------------------------------------------
 
 export function qac(config: GridWorldConfig, options: ACOptions): ACResult {
-  const { seed, horizonH, actorAlpha, criticAlpha, episodes } = options;
+  const {
+    seed,
+    horizonH,
+    actorAlpha,
+    criticAlpha,
+    episodes,
+    bootstrapOnTruncation = true,
+    actorWeightMode = 'raw-q',
+  } = options;
   const rng = mulberry32(seed);
   const numStates = config.rows * config.cols;
   const numActions = 5;
 
   let h: number[][] = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
   let q: number[][] = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
+
+  const initialPolicy = h.map((row) => softmaxDistribution(row));
+  let currentPolicy: Policy = initialPolicy.map((row) => [...row]);
+  const policyAfterEpisode: Policy[] = [];
 
   const updates: ACUpdateRecord[] = [];
   const episodesRecord: ACEpisodeRecord[] = [];
@@ -479,13 +570,13 @@ export function qac(config: GridWorldConfig, options: ACOptions): ACResult {
     let truncated = false;
 
     if (isTerminal(state, config)) {
+      policyAfterEpisode.push(currentPolicy.map((row) => [...row]));
       episodesRecord.push({ cumulativeReward, discountedReturn, episodeLength, success, truncated });
       continue;
     }
 
     // Sarsa-style QAC: sample the first action from the current policy.
-    const initialPolicy = h.map((row) => softmaxDistribution(row));
-    let action = sampleActionWithRng(initialPolicy[state], rng) as Action;
+    let action = sampleActionWithRng(currentPolicy[state], rng) as Action;
 
     for (let t = 0; t < horizonH; t++) {
       const fullPolicyBefore = h.map((row) => softmaxDistribution(row));
@@ -496,11 +587,14 @@ export function qac(config: GridWorldConfig, options: ACOptions): ACResult {
       discountedReturn += discount * result.reward;
       discount *= config.gamma;
 
+      const isTruncated = !result.done && t === horizonH - 1;
+      const shouldBootstrap = !result.done && (!isTruncated || bootstrapOnTruncation);
+
       const qBefore = q[state][action];
       let criticTarget = result.reward;
       let criticBootstrap = 0;
       let nextAction: Action | undefined;
-      if (!result.done) {
+      if (shouldBootstrap) {
         const policyNext = softmaxDistribution(h[result.nextState]);
         nextAction = sampleActionWithRng(policyNext, rng) as Action;
         criticBootstrap = q[result.nextState][nextAction];
@@ -513,14 +607,20 @@ export function qac(config: GridWorldConfig, options: ACOptions): ACResult {
       const qAfter = q[state][action];
 
       const score = softmaxScore(policyBefore, action);
-      const actorWeight = qBefore;
+      let actorWeight: number;
+      if (actorWeightMode === 'advantage') {
+        const vPi = policyBefore.reduce((sum, p, a) => sum + p * qTableBefore[state][a], 0);
+        actorWeight = qBefore - vPi;
+      } else {
+        actorWeight = qBefore;
+      }
       const actorDelta = score.map((s) => actorAlpha * actorWeight * s);
       for (let a = 0; a < numActions; a++) {
         h[state][a] += actorDelta[a];
       }
       const fullPolicyAfter = h.map((row) => softmaxDistribution(row));
+      currentPolicy = fullPolicyAfter.map((row) => [...row]);
 
-      const isTruncated = !result.done && t === horizonH - 1;
       const record: ACUpdateRecord = {
         episode: ep + 1,
         time: t,
@@ -531,6 +631,7 @@ export function qac(config: GridWorldConfig, options: ACOptions): ACResult {
         nextAction,
         done: result.done,
         truncated: isTruncated,
+        bootstrapUsed: shouldBootstrap,
         actorPolicyBefore: policyBefore,
         actorPolicyAfter: fullPolicyAfter[state],
         actorFullPolicyBefore: fullPolicyBefore,
@@ -541,6 +642,7 @@ export function qac(config: GridWorldConfig, options: ACOptions): ACResult {
         tdError: criticError,
         criticEstimateAfter: qAfter,
         actorWeight,
+        actorWeightMode,
         scoreGradient: score,
         actorDelta,
         qBefore: qTableBefore,
@@ -563,7 +665,7 @@ export function qac(config: GridWorldConfig, options: ACOptions): ACResult {
         success = true;
         break;
       }
-      if (t === horizonH - 1) {
+      if (isTruncated) {
         truncated = true;
         break;
       }
@@ -572,11 +674,11 @@ export function qac(config: GridWorldConfig, options: ACOptions): ACResult {
       action = nextAction!;
     }
 
+    policyAfterEpisode.push(currentPolicy.map((row) => [...row]));
     episodesRecord.push({ cumulativeReward, discountedReturn, episodeLength, success, truncated });
   }
 
   const finalPolicy = h.map((row) => softmaxDistribution(row));
-  const { initialPolicy, policyAfterEpisode } = extractPolicyTrajectory(updates, episodesRecord, finalPolicy);
   return {
     updates,
     frames: updates,
@@ -597,13 +699,17 @@ export function qac(config: GridWorldConfig, options: ACOptions): ACResult {
 // ---------------------------------------------------------------------------
 
 export function a2c(config: GridWorldConfig, options: ACOptions): ACResult {
-  const { seed, horizonH, actorAlpha, criticAlpha, episodes } = options;
+  const { seed, horizonH, actorAlpha, criticAlpha, episodes, bootstrapOnTruncation = true } = options;
   const rng = mulberry32(seed);
   const numStates = config.rows * config.cols;
   const numActions = 5;
 
   let h: number[][] = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
   let v: number[] = new Array(numStates).fill(0);
+
+  const initialPolicy = h.map((row) => softmaxDistribution(row));
+  let currentPolicy: Policy = initialPolicy.map((row) => [...row]);
+  const policyAfterEpisode: Policy[] = [];
 
   const updates: ACUpdateRecord[] = [];
   const episodesRecord: ACEpisodeRecord[] = [];
@@ -614,6 +720,7 @@ export function a2c(config: GridWorldConfig, options: ACOptions): ACResult {
   let stopTraining = false;
 
   for (let ep = 0; ep < episodes && !stopTraining; ep++) {
+    const episodeStartUpdateCount = updates.length;
     let state = config.startState;
     let cumulativeReward = 0;
     let discountedReturn = 0;
@@ -634,9 +741,12 @@ export function a2c(config: GridWorldConfig, options: ACOptions): ACResult {
       discountedReturn += discount * result.reward;
       discount *= config.gamma;
 
+      const isTruncated = !result.done && t === horizonH - 1;
+      const shouldBootstrap = !result.done && (!isTruncated || bootstrapOnTruncation);
+
       const vBeforeAll = [...v];
       const vBefore = v[state];
-      const criticBootstrap = result.done ? 0 : v[result.nextState];
+      const criticBootstrap = shouldBootstrap ? v[result.nextState] : 0;
       const criticTarget = result.reward + config.gamma * criticBootstrap;
       const tdError = criticTarget - vBefore;
       v[state] += criticAlpha * tdError;
@@ -649,8 +759,8 @@ export function a2c(config: GridWorldConfig, options: ACOptions): ACResult {
         h[state][a] += actorDelta[a];
       }
       const fullPolicyAfter = h.map((row) => softmaxDistribution(row));
+      currentPolicy = fullPolicyAfter.map((row) => [...row]);
 
-      const isTruncated = !result.done && t === horizonH - 1;
       const record: ACUpdateRecord = {
         episode: ep + 1,
         time: t,
@@ -660,6 +770,7 @@ export function a2c(config: GridWorldConfig, options: ACOptions): ACResult {
         nextState: result.nextState,
         done: result.done,
         truncated: isTruncated,
+        bootstrapUsed: shouldBootstrap,
         actorPolicyBefore: policyBefore,
         actorPolicyAfter: fullPolicyAfter[state],
         actorFullPolicyBefore: fullPolicyBefore,
@@ -693,14 +804,20 @@ export function a2c(config: GridWorldConfig, options: ACOptions): ACResult {
         success = true;
         break;
       }
-      if (t === horizonH - 1) truncated = true;
+      if (isTruncated) {
+        truncated = true;
+        break;
+      }
     }
 
+    if (updates.length > episodeStartUpdateCount) {
+      currentPolicy = updates[updates.length - 1].actorFullPolicyAfter!;
+    }
+    policyAfterEpisode.push(currentPolicy.map((row) => [...row]));
     episodesRecord.push({ cumulativeReward, discountedReturn, episodeLength, success, truncated });
   }
 
   const finalPolicy = h.map((row) => softmaxDistribution(row));
-  const { initialPolicy, policyAfterEpisode } = extractPolicyTrajectory(updates, episodesRecord, finalPolicy);
   return {
     updates,
     frames: updates,
@@ -721,13 +838,27 @@ export function a2c(config: GridWorldConfig, options: ACOptions): ACResult {
 // ---------------------------------------------------------------------------
 
 export function offPolicyActorCritic(config: GridWorldConfig, options: ACOptions): ACResult {
-  const { seed, horizonH, actorAlpha, criticAlpha, episodes, epsilon = 0.5 } = options;
+  const {
+    seed,
+    horizonH,
+    actorAlpha,
+    criticAlpha,
+    episodes,
+    epsilon = 0.5,
+    bootstrapOnTruncation = true,
+    importanceMode = 'raw',
+    clipThreshold = 10,
+  } = options;
   const rng = mulberry32(seed);
   const numStates = config.rows * config.cols;
   const numActions = 5;
 
   let h: number[][] = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
   let v: number[] = new Array(numStates).fill(0);
+
+  const initialPolicy = h.map((row) => softmaxDistribution(row));
+  let currentPolicy: Policy = initialPolicy.map((row) => [...row]);
+  const policyAfterEpisode: Policy[] = [];
 
   const updates: ACUpdateRecord[] = [];
   const episodesRecord: ACEpisodeRecord[] = [];
@@ -737,7 +868,14 @@ export function offPolicyActorCritic(config: GridWorldConfig, options: ACOptions
   let largeMagnitudeWarning: { step: number; reason: string } | undefined;
   let stopTraining = false;
 
+  function clipRho(raw: number): { used: number; clipped: boolean } {
+    if (importanceMode !== 'clipped') return { used: raw, clipped: false };
+    const threshold = Math.max(1, clipThreshold);
+    return raw > threshold ? { used: threshold, clipped: true } : { used: raw, clipped: false };
+  }
+
   for (let ep = 0; ep < episodes && !stopTraining; ep++) {
+    const episodeStartUpdateCount = updates.length;
     let state = config.startState;
     let cumulativeReward = 0;
     let discountedReturn = 0;
@@ -763,25 +901,29 @@ export function offPolicyActorCritic(config: GridWorldConfig, options: ACOptions
 
       const targetProb = targetPolicy[action];
       const behaviorProb = behaviorPolicy[action];
-      const rho = targetProb / behaviorProb;
+      const rawRho = targetProb / behaviorProb;
+      const { used: usedRho, clipped: wasClipped } = clipRho(rawRho);
+
+      const isTruncated = !result.done && t === horizonH - 1;
+      const shouldBootstrap = !result.done && (!isTruncated || bootstrapOnTruncation);
 
       const vBeforeAll = [...v];
       const vBefore = v[state];
-      const criticBootstrap = result.done ? 0 : v[result.nextState];
+      const criticBootstrap = shouldBootstrap ? v[result.nextState] : 0;
       const criticTarget = result.reward + config.gamma * criticBootstrap;
       const tdError = criticTarget - vBefore;
-      v[state] += criticAlpha * rho * tdError;
+      v[state] += criticAlpha * usedRho * tdError;
       const vAfterAll = [...v];
 
       const score = softmaxScore(targetPolicy, action);
-      const actorWeight = rho * tdError;
+      const actorWeight = usedRho * tdError;
       const actorDelta = score.map((s) => actorAlpha * actorWeight * s);
       for (let a = 0; a < numActions; a++) {
         h[state][a] += actorDelta[a];
       }
       const fullPolicyAfter = h.map((row) => softmaxDistribution(row));
+      currentPolicy = fullPolicyAfter.map((row) => [...row]);
 
-      const isTruncated = !result.done && t === horizonH - 1;
       const record: ACUpdateRecord = {
         episode: ep + 1,
         time: t,
@@ -791,6 +933,7 @@ export function offPolicyActorCritic(config: GridWorldConfig, options: ACOptions
         nextState: result.nextState,
         done: result.done,
         truncated: isTruncated,
+        bootstrapUsed: shouldBootstrap,
         actorPolicyBefore: targetPolicy,
         actorPolicyAfter: fullPolicyAfter[state],
         actorFullPolicyBefore: fullPolicyBefore,
@@ -809,7 +952,10 @@ export function offPolicyActorCritic(config: GridWorldConfig, options: ACOptions
         behaviorPolicy,
         targetProb,
         behaviorProb,
-        rho,
+        rho: usedRho,
+        rawRho,
+        usedRho,
+        wasClipped,
       };
 
       const health = checkNumericalHealth(record);
@@ -829,14 +975,20 @@ export function offPolicyActorCritic(config: GridWorldConfig, options: ACOptions
         success = true;
         break;
       }
-      if (t === horizonH - 1) truncated = true;
+      if (isTruncated) {
+        truncated = true;
+        break;
+      }
     }
 
+    if (updates.length > episodeStartUpdateCount) {
+      currentPolicy = updates[updates.length - 1].actorFullPolicyAfter!;
+    }
+    policyAfterEpisode.push(currentPolicy.map((row) => [...row]));
     episodesRecord.push({ cumulativeReward, discountedReturn, episodeLength, success, truncated });
   }
 
   const finalPolicy = h.map((row) => softmaxDistribution(row));
-  const { initialPolicy, policyAfterEpisode } = extractPolicyTrajectory(updates, episodesRecord, finalPolicy);
   return {
     updates,
     frames: updates,
@@ -857,13 +1009,27 @@ export function offPolicyActorCritic(config: GridWorldConfig, options: ACOptions
 // ---------------------------------------------------------------------------
 
 export function qBasedOffPolicyActorCritic(config: GridWorldConfig, options: ACOptions): ACResult {
-  const { seed, horizonH, actorAlpha, criticAlpha, episodes, epsilon = 0.5 } = options;
+  const {
+    seed,
+    horizonH,
+    actorAlpha,
+    criticAlpha,
+    episodes,
+    epsilon = 0.5,
+    bootstrapOnTruncation = true,
+    importanceMode = 'raw',
+    clipThreshold = 10,
+  } = options;
   const rng = mulberry32(seed);
   const numStates = config.rows * config.cols;
   const numActions = 5;
 
   let h: number[][] = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
   let q: number[][] = Array.from({ length: numStates }, () => new Array(numActions).fill(0));
+
+  const initialPolicy = h.map((row) => softmaxDistribution(row));
+  let currentPolicy: Policy = initialPolicy.map((row) => [...row]);
+  const policyAfterEpisode: Policy[] = [];
 
   const updates: ACUpdateRecord[] = [];
   const episodesRecord: ACEpisodeRecord[] = [];
@@ -882,7 +1048,14 @@ export function qBasedOffPolicyActorCritic(config: GridWorldConfig, options: ACO
     return greedy.map((p) => epsilon / numActions + (1 - epsilon) * p);
   }
 
+  function clipRho(raw: number): { used: number; clipped: boolean } {
+    if (importanceMode !== 'clipped') return { used: raw, clipped: false };
+    const threshold = Math.max(1, clipThreshold);
+    return raw > threshold ? { used: threshold, clipped: true } : { used: raw, clipped: false };
+  }
+
   for (let ep = 0; ep < episodes && !stopTraining; ep++) {
+    const episodeStartUpdateCount = updates.length;
     let state = config.startState;
     let cumulativeReward = 0;
     let discountedReturn = 0;
@@ -908,32 +1081,37 @@ export function qBasedOffPolicyActorCritic(config: GridWorldConfig, options: ACO
 
       const targetProb = targetPolicy[action];
       const behaviorProb = behaviorPolicy[action];
-      const rho = targetProb / behaviorProb;
+      const rawRho = targetProb / behaviorProb;
+      const { used: usedRho, clipped: wasClipped } = clipRho(rawRho);
+
+      const isTruncated = !result.done && t === horizonH - 1;
+      const shouldBootstrap = !result.done && (!isTruncated || bootstrapOnTruncation);
 
       const qBefore = q[state][action];
       let criticBootstrap = 0;
+      let expectedBootstrap = 0;
       let criticTarget = result.reward;
-      if (!result.done) {
-        const policyNext = softmaxDistribution(h[result.nextState]);
-        const aNext = sampleActionWithRng(policyNext, rng);
-        criticBootstrap = q[result.nextState][aNext];
-        criticTarget += config.gamma * criticBootstrap;
+      if (shouldBootstrap) {
+        const targetPolicyNext = softmaxDistribution(h[result.nextState]);
+        expectedBootstrap = targetPolicyNext.reduce((sum, p, a) => sum + p * q[result.nextState][a], 0);
+        criticBootstrap = expectedBootstrap;
+        criticTarget += config.gamma * expectedBootstrap;
       }
       const qTableBefore = q.map((row) => [...row]);
       const criticError = criticTarget - qBefore;
-      q[state][action] += criticAlpha * rho * criticError;
+      q[state][action] += criticAlpha * usedRho * criticError;
       const qTableAfter = q.map((row) => [...row]);
       const qAfter = q[state][action];
 
       const score = softmaxScore(targetPolicy, action);
-      const actorWeight = rho * qBefore;
+      const actorWeight = usedRho * qBefore;
       const actorDelta = score.map((s) => actorAlpha * actorWeight * s);
       for (let a = 0; a < numActions; a++) {
         h[state][a] += actorDelta[a];
       }
       const fullPolicyAfter = h.map((row) => softmaxDistribution(row));
+      currentPolicy = fullPolicyAfter.map((row) => [...row]);
 
-      const isTruncated = !result.done && t === horizonH - 1;
       const record: ACUpdateRecord = {
         episode: ep + 1,
         time: t,
@@ -943,12 +1121,14 @@ export function qBasedOffPolicyActorCritic(config: GridWorldConfig, options: ACO
         nextState: result.nextState,
         done: result.done,
         truncated: isTruncated,
+        bootstrapUsed: shouldBootstrap,
         actorPolicyBefore: targetPolicy,
         actorPolicyAfter: fullPolicyAfter[state],
         actorFullPolicyBefore: fullPolicyBefore,
         actorFullPolicyAfter: fullPolicyAfter,
         criticEstimateBefore: qBefore,
         criticBootstrap,
+        expectedBootstrap,
         criticTarget,
         tdError: criticError,
         criticEstimateAfter: qAfter,
@@ -961,7 +1141,10 @@ export function qBasedOffPolicyActorCritic(config: GridWorldConfig, options: ACO
         behaviorPolicy,
         targetProb,
         behaviorProb,
-        rho,
+        rho: usedRho,
+        rawRho,
+        usedRho,
+        wasClipped,
       };
 
       const health = checkNumericalHealth(record);
@@ -981,14 +1164,20 @@ export function qBasedOffPolicyActorCritic(config: GridWorldConfig, options: ACO
         success = true;
         break;
       }
-      if (t === horizonH - 1) truncated = true;
+      if (isTruncated) {
+        truncated = true;
+        break;
+      }
     }
 
+    if (updates.length > episodeStartUpdateCount) {
+      currentPolicy = updates[updates.length - 1].actorFullPolicyAfter!;
+    }
+    policyAfterEpisode.push(currentPolicy.map((row) => [...row]));
     episodesRecord.push({ cumulativeReward, discountedReturn, episodeLength, success, truncated });
   }
 
   const finalPolicy = h.map((row) => softmaxDistribution(row));
-  const { initialPolicy, policyAfterEpisode } = extractPolicyTrajectory(updates, episodesRecord, finalPolicy);
   return {
     updates,
     frames: updates,

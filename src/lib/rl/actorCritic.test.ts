@@ -19,6 +19,8 @@ import {
   buildActionIndependentBaseline,
   buildActionDependentBaseline,
   klDivergence,
+  solveStateValuesWithSlip,
+  computeQValuesWithSlip,
   type ACOptions,
   type ACResult,
 } from './actorCritic';
@@ -499,6 +501,144 @@ export function runACTests() {
     warningRes.largeMagnitudeWarning !== undefined,
     'large reward scale triggers large-magnitude warning'
   );
+
+  // 35. bootstrapOnTruncation=false disables bootstrap at the artificial horizon
+  const noBootstrapA2C = a2c(EPISODIC_PATH_CONFIG, {
+    ...defaultOptions,
+    horizonH: 2,
+    episodes: 5,
+    bootstrapOnTruncation: false,
+  });
+  const truncatedA2C = noBootstrapA2C.updates.filter((u) => u.truncated);
+  assert(truncatedA2C.length > 0, 'found truncated transitions with H=2');
+  truncatedA2C.forEach((u) => {
+    assert(u.bootstrapUsed === false, 'truncated transition does not bootstrap when disabled');
+    assert(near(u.criticBootstrap, 0, 1e-9), 'bootstrap value is zero when disabled');
+    assert(near(u.criticTarget, u.reward, 1e-9), 'target equals reward when bootstrap disabled');
+  });
+
+  // 36. bootstrapOnTruncation=true (default) bootstraps at truncation boundary
+  const yesBootstrapA2C = a2c(EPISODIC_PATH_CONFIG, {
+    ...defaultOptions,
+    horizonH: 20,
+    episodes: 30,
+    bootstrapOnTruncation: true,
+  });
+  const truncatedYesA2C = yesBootstrapA2C.updates.filter((u) => u.truncated);
+  assert(truncatedYesA2C.length > 0, 'found truncated transitions with bootstrap enabled');
+  const bootstrappedTruncated = truncatedYesA2C.filter(
+    (u) => u.bootstrapUsed === true && !near(u.criticBootstrap, 0, 1e-9)
+  );
+  assert(bootstrappedTruncated.length > 0, 'at least one truncated transition bootstraps with non-zero value when enabled');
+
+  // 37. policy history is saved for every episode and inherits previous policy when no updates occur
+  const historyRes = a2c(EPISODIC_PATH_CONFIG, { ...defaultOptions, episodes: 5 });
+  assert(historyRes.policyAfterEpisode.length === 5, 'policyAfterEpisode has one entry per episode');
+  assert(historyRes.initialPolicy.length === 9, 'initialPolicy has one distribution per state');
+  assert(
+    historyRes.initialPolicy.every((dist) => near(dist.reduce((a, b) => a + b, 0), 1, 1e-9)),
+    'initialPolicy entries are valid probability distributions'
+  );
+  historyRes.policyAfterEpisode.forEach((pol) => {
+    assert(pol.length === 9, 'policyAfterEpisode entry has one distribution per state');
+    assert(pol.every((dist) => near(dist.reduce((a, b) => a + b, 0), 1, 1e-9)), 'policy distributions sum to 1');
+  });
+
+  const terminalStartConfig = { ...EPISODIC_PATH_CONFIG, startState: EPISODIC_PATH_CONFIG.targetState };
+  const terminalStartRes = a2c(terminalStartConfig, { ...defaultOptions, episodes: 3 });
+  assert(terminalStartRes.updates.length === 0, 'terminal start produces no updates');
+  assert(terminalStartRes.policyAfterEpisode.length === 3, 'policyAfterEpisode still saved for empty episodes');
+  terminalStartRes.policyAfterEpisode.forEach((pol) => {
+    assert(
+      pol.every((dist, s) => dist.every((p, a) => near(p, terminalStartRes.initialPolicy[s][a], 1e-9))),
+      'empty episodes inherit the previous policy'
+    );
+  });
+
+  // 38. QAC advantage actorWeight equals qBefore - V_pi(s)
+  const qacAdvantage = qac(EPISODIC_PATH_CONFIG, {
+    ...defaultOptions,
+    episodes: 5,
+    actorWeightMode: 'advantage',
+  });
+  qacAdvantage.updates.forEach((u) => {
+    const qRow = u.qBefore![u.state];
+    const vPi = u.actorPolicyBefore.reduce((sum, p, a) => sum + p * qRow[a], 0);
+    assert(near(u.actorWeight, u.criticEstimateBefore - vPi, 1e-9), 'advantage actorWeight is Q - V_pi');
+  });
+
+  // 39. advantage-mode actor weight has the same policy-gradient expectation as raw-Q
+  const qacRaw = qac(EPISODIC_PATH_CONFIG, { ...defaultOptions, episodes: 5, actorWeightMode: 'raw-q' });
+  for (const u of qacRaw.updates) {
+    const rawBaseline = u.qBefore![u.state];
+    const vPi = u.actorPolicyBefore.reduce((sum, p, b) => sum + p * rawBaseline[b], 0);
+    const advBaseline = rawBaseline.map((q) => q - vPi);
+    const rawCheck = checkBaselineInvariance([u.actorPolicyBefore], [rawBaseline]);
+    const advCheck = checkBaselineInvariance([u.actorPolicyBefore], [advBaseline]);
+    assert(near(rawCheck.maxAbs, advCheck.maxAbs, 1e-9), 'advantage baseline expectation matches raw-Q expectation');
+  }
+
+  // 40. off-policy IS clipping limits usedRho and records raw/used/clipped flags
+  const clippedRes = offPolicyActorCritic(EPISODIC_PATH_CONFIG, {
+    ...defaultOptions,
+    epsilon: 0.9,
+    episodes: 20,
+    importanceMode: 'clipped',
+    clipThreshold: 2,
+  });
+  assert(clippedRes.updates.every((u) => u.rawRho !== undefined && u.usedRho !== undefined && u.wasClipped !== undefined), 'clipping fields recorded');
+  assert(clippedRes.updates.every((u) => u.usedRho! <= 2 + 1e-9), 'usedRho does not exceed clip threshold');
+  assert(clippedRes.updates.every((u) => (u.wasClipped ? near(u.usedRho!, 2, 1e-9) : true)), 'clipped samples use threshold');
+  const clippedCount = clippedRes.updates.filter((u) => u.wasClipped).length;
+  const shouldClipCount = clippedRes.updates.filter((u) => u.rawRho! > 2 + 1e-9).length;
+  assert(clippedCount === shouldClipCount, 'wasClipped flag matches rawRho > threshold');
+
+  // 41. raw mode keeps rho unchanged and never clips
+  const rawRes = offPolicyActorCritic(EPISODIC_PATH_CONFIG, {
+    ...defaultOptions,
+    epsilon: 0.9,
+    episodes: 20,
+    importanceMode: 'raw',
+  });
+  rawRes.updates.forEach((u) => {
+    assert(near(u.rho!, u.rawRho!, 1e-9), 'raw mode rho equals rawRho');
+    assert(u.wasClipped === false, 'raw mode does not clip');
+  });
+
+  // 42. Q-based off-policy uses expected bootstrap target
+  const qBasedRes = qBasedOffPolicyActorCritic(EPISODIC_PATH_CONFIG, {
+    ...defaultOptions,
+    epsilon: 0.5,
+    episodes: 5,
+  });
+  qBasedRes.updates.forEach((u) => {
+    if (!u.done) {
+      // The expected bootstrap was computed before the actor update, so use the policy before update.
+      const targetPolicyNext = u.actorFullPolicyBefore![u.nextState];
+      const expected = targetPolicyNext.reduce((sum, p, a) => sum + p * u.qBefore![u.nextState][a], 0);
+      assert(near(u.expectedBootstrap!, expected, 1e-9), 'expectedBootstrap equals Σ π(a|s\') Q(s\',a)');
+      assert(near(u.criticTarget, u.reward + EPISODIC_PATH_CONFIG.gamma * expected, 1e-9), 'critic target uses expected bootstrap');
+    }
+  });
+
+  // 43. stochastic value solver with zero slip matches deterministic solver
+  const slipPolicy = Array.from({ length: 9 }, () => Array.from({ length: 5 }, () => 1 / 5));
+  const detValues = solveStateValues(slipPolicy, exactConfig);
+  const slipValues = solveStateValuesWithSlip(slipPolicy, exactConfig, 0);
+  detValues.forEach((v, s) => assert(near(v, slipValues[s], 1e-9), `slip=0 values match deterministic at state ${s}`));
+  const detQ = computeQValues(detValues, exactConfig);
+  const slipQ = computeQValuesWithSlip(slipPolicy, exactConfig, 0);
+  detQ.forEach((row, s) =>
+    row.forEach((q, a) => assert(near(q, slipQ[s][a], 1e-9), `slip=0 Q matches deterministic at (${s},${a})`))
+  );
+
+  // 44. metric series uses renamed episode-length fields and averages
+  const metricRes = a2c(EPISODIC_PATH_CONFIG, { ...defaultOptions, episodes: 10 });
+  const metricSeries = computeACMetricSeries(metricRes, 3);
+  assert(metricSeries.every((m) => 'movingAverageEpisodeLength' in m), 'metric series has movingAverageEpisodeLength');
+  assert(metricSeries.every((m) => 'overallAverageEpisodeLength' in m), 'metric series has overallAverageEpisodeLength');
+  const totalLength = metricRes.episodes.reduce((sum, ep) => sum + ep.episodeLength, 0);
+  assert(near(metricSeries[metricSeries.length - 1].overallAverageEpisodeLength, totalLength / metricRes.episodes.length, 1e-9), 'overall average episode length matches');
 
   console.log('✅ Actor-Critic tests passed');
 }

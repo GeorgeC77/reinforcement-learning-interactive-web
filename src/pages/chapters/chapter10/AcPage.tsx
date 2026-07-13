@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { Activity, AlertTriangle, RefreshCw, ShieldAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
+import { Switch } from '@/components/ui/switch';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
@@ -20,6 +21,7 @@ import LineChart from '@/components/LineChart';
 import ConceptAccordion from '@/components/ConceptAccordion';
 import {
   EPISODIC_PATH_CONFIG,
+  DEFAULT_CONFIG,
   ACTION_NAMES,
   type GridWorldConfig,
   type Action,
@@ -27,6 +29,8 @@ import {
   computeQValues,
   actionValueToStateValue,
   isTerminal,
+  step,
+  stochasticTransition,
 } from '@/lib/rl/gridworld';
 import { mulberry32 } from '@/lib/rl/stochasticApproximation';
 import {
@@ -43,6 +47,8 @@ import {
   baselineExpectationMatrix,
   buildActionIndependentBaseline,
   buildActionDependentBaseline,
+  solveStateValuesWithSlip,
+  computeQValuesWithSlip,
   type ACUpdateRecord,
   type ACResult,
   type DeterministicACStep,
@@ -53,8 +59,15 @@ const H_OPTIONS = [10, 20, 30, 50, 100, 200];
 type TabKey = 'overview' | 'qac' | 'baseline' | 'a2c' | 'offpolicy' | 'deterministic';
 type TaskType = 'episodic' | 'continuing';
 
-function buildConfig(base: GridWorldConfig, taskType: TaskType): GridWorldConfig {
-  return { ...base, taskType };
+function configFromTask(taskType: TaskType): GridWorldConfig {
+  return taskType === 'episodic' ? EPISODIC_PATH_CONFIG : DEFAULT_CONFIG;
+}
+
+function configDescription(config: GridWorldConfig): string {
+  if (config.taskType === 'episodic') {
+    return `episodic path-finding：起点 s${config.startState + 1}，目标 s${config.targetState + 1}，禁止状态 [${config.forbiddenStates.map((s) => s + 1).join(', ')}]，每步 ${config.stepReward}，撞墙/禁止 ${config.forbiddenReward}，到达目标 ${config.targetReward}`;
+  }
+  return `textbook continuing：起点 s${config.startState + 1}，目标 s${config.targetState + 1}（不终止），禁止状态 [${config.forbiddenStates.map((s) => s + 1).join(', ')}]，目标奖励 ${config.targetReward}，禁止奖励 ${config.forbiddenReward}，折扣 γ=${config.gamma}`;
 }
 
 export default function Chapter10AcPage() {
@@ -213,9 +226,13 @@ function MetricPanel({ result }: { result: ACResult }) {
           <div className="text-gray-500">成功率</div>
           <div className="font-mono font-semibold">{last ? `${(last.successRate * 100).toFixed(0)}%` : '—'}</div>
         </div>
-        <div className="bg-gray-50 rounded p-2 col-span-2">
-          <div className="text-gray-500">mean absolute TD error</div>
-          <div className="font-mono font-semibold">{last ? last.meanAbsoluteTdError.toFixed(3) : '—'}</div>
+        <div className="bg-gray-50 rounded p-2">
+          <div className="text-gray-500">移动平均回合长度</div>
+          <div className="font-mono font-semibold">{last ? last.movingAverageEpisodeLength.toFixed(1) : '—'}</div>
+        </div>
+        <div className="bg-gray-50 rounded p-2">
+          <div className="text-gray-500">全训练平均回合长度</div>
+          <div className="font-mono font-semibold">{last ? last.overallAverageEpisodeLength.toFixed(1) : '—'}</div>
         </div>
       </div>
 
@@ -235,11 +252,18 @@ function MetricPanel({ result }: { result: ACResult }) {
         data={series as any}
         xKey="episode"
         xLabel="回合"
-        yLabel="指标"
+        yLabel="|TD error|"
+        series={[{ key: 'meanAbsoluteTdError', name: 'Mean |TD Error|', color: '#f59e0b' }]}
+        height={140}
+      />
+      <LineChart
+        data={series as any}
+        xKey="episode"
+        xLabel="回合"
+        yLabel="更新幅度"
         series={[
           { key: 'actorUpdateNorm', name: 'Actor Update Norm', color: '#2563eb' },
           { key: 'criticUpdateNorm', name: 'Critic Update Norm', color: '#22c55e' },
-          { key: 'meanAbsoluteTdError', name: 'Mean |TD Error|', color: '#f59e0b' },
         ]}
         height={140}
       />
@@ -247,8 +271,11 @@ function MetricPanel({ result }: { result: ACResult }) {
         data={series as any}
         xKey="episode"
         xLabel="回合"
-        yLabel="KL"
-        series={[{ key: 'meanKL', name: '相邻策略平均 KL 变化', color: '#8b5cf6' }]}
+        yLabel="策略变化"
+        series={[
+          { key: 'meanKL', name: '相邻策略平均 KL 变化', color: '#8b5cf6' },
+          { key: 'entropy', name: '策略熵', color: '#06b6d4' },
+        ]}
         height={120}
       />
     </div>
@@ -287,6 +314,15 @@ function TransitionCard({ record }: { record: ACUpdateRecord }) {
         </div>
       </div>
       <div className={`inline-block px-2 py-1 rounded text-xs ${statusClass}`}>{statusLabel}</div>
+      {record.bootstrapUsed !== undefined && (
+        <div
+          className={`inline-block px-2 py-1 rounded text-xs ml-2 ${
+            record.bootstrapUsed ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'
+          }`}
+        >
+          {record.bootstrapUsed ? 'bootstrap used' : 'no bootstrap'}
+        </div>
+      )}
     </div>
   );
 }
@@ -372,6 +408,8 @@ function DiscreteControlPanel({
   setCriticAlpha,
   episodes,
   setEpisodes,
+  bootstrapOnTruncation,
+  setBootstrapOnTruncation,
   children,
 }: {
   seed: number;
@@ -386,6 +424,8 @@ function DiscreteControlPanel({
   setCriticAlpha: (v: number) => void;
   episodes: number;
   setEpisodes: (v: number) => void;
+  bootstrapOnTruncation?: boolean;
+  setBootstrapOnTruncation?: (v: boolean) => void;
   children?: React.ReactNode;
 }) {
   return (
@@ -398,8 +438,8 @@ function DiscreteControlPanel({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="episodic">episodic</SelectItem>
-              <SelectItem value="continuing">truncated continuing</SelectItem>
+              <SelectItem value="episodic">episodic path-finding</SelectItem>
+              <SelectItem value="continuing">textbook continuing</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -419,6 +459,18 @@ function DiscreteControlPanel({
           </Select>
         </div>
       </div>
+      {bootstrapOnTruncation !== undefined && setBootstrapOnTruncation && (
+        <div className="flex items-center justify-between rounded-lg border border-gray-200 p-3">
+          <div className="space-y-0.5">
+            <label className="text-sm font-medium text-gray-700">horizon truncation 时 bootstrap</label>
+            <p className="text-xs text-gray-500">关闭后把人为截断视为终止，避免时间限制偏差。</p>
+          </div>
+          <Switch
+            checked={bootstrapOnTruncation}
+            onCheckedChange={setBootstrapOnTruncation}
+          />
+        </div>
+      )}
       <div className="flex items-center gap-2">
         <div className="flex-1">
           <label className="text-sm text-gray-700 block mb-1">seed</label>
@@ -446,7 +498,7 @@ function DiscreteControlPanel({
 // ---------------------------------------------------------------------------
 
 function OverviewDemo() {
-  const config = useMemo(() => buildConfig(EPISODIC_PATH_CONFIG, 'episodic'), []);
+  const config = useMemo(() => EPISODIC_PATH_CONFIG, []);
   const result = useMemo(
     () =>
       a2c(config, {
@@ -568,8 +620,11 @@ function QacDemo() {
   const [criticAlpha, setCriticAlpha] = useState(0.1);
   const [episodes, setEpisodes] = useState(80);
   const [valueMode, setValueMode] = useState<'actor' | 'greedy'>('actor');
+  const [actorWeightMode, setActorWeightMode] = useState<'raw-q' | 'advantage'>('raw-q');
+  const [bootstrapOnTruncation, setBootstrapOnTruncation] = useState(true);
+  const [qShift, setQShift] = useState(0);
 
-  const config = useMemo(() => buildConfig(EPISODIC_PATH_CONFIG, taskType), [taskType]);
+  const config = useMemo(() => configFromTask(taskType), [taskType]);
   const result = useMemo(
     () =>
       qac(config, {
@@ -578,8 +633,10 @@ function QacDemo() {
         actorAlpha,
         criticAlpha,
         episodes,
+        actorWeightMode,
+        bootstrapOnTruncation,
       }),
-    [config, seed, horizonH, actorAlpha, criticAlpha, episodes]
+    [config, seed, horizonH, actorAlpha, criticAlpha, episodes, actorWeightMode, bootstrapOnTruncation]
   );
   const [step, setStep] = useState(0);
   const record = result.updates[Math.min(step, result.updates.length - 1)];
@@ -688,7 +745,23 @@ q(S_t,A_t) &\leftarrow q(S_t,A_t) + \alpha_w \delta_t \\
                 setCriticAlpha={setCriticAlpha}
                 episodes={episodes}
                 setEpisodes={setEpisodes}
-              />
+                bootstrapOnTruncation={bootstrapOnTruncation}
+                setBootstrapOnTruncation={setBootstrapOnTruncation}
+              >
+                <div>
+                  <label className="text-sm text-gray-700 block mb-1">Actor 权重模式</label>
+                  <Select value={actorWeightMode} onValueChange={(v) => setActorWeightMode(v as 'raw-q' | 'advantage')}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="raw-q">raw q(s,a)</SelectItem>
+                      <SelectItem value="advantage">q(s,a) - V_π(s)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </DiscreteControlPanel>
+              <div className="mt-3 text-xs text-gray-600">{configDescription(config)}</div>
             </CardContent>
           </Card>
           <Card>
@@ -697,6 +770,37 @@ q(S_t,A_t) &\leftarrow q(S_t,A_t) + \alpha_w \delta_t \\
             </CardHeader>
             <CardContent>
               <AlgorithmPlayer maxStep={result.updates.length - 1} currentStep={step} onStepChange={setStep} />
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Q 平移实验</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm text-gray-700">
+              <p>对当前状态 s 的所有动作 Q(s,·) 同时加上常数 c(s)：</p>
+              <Param label="平移量 c(s)" value={qShift} set={setQShift} min={-5} max={5} step={0.5} fixed={1} />
+              {record && (
+                <div className="space-y-2">
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="bg-gray-50 rounded p-2">
+                      <div className="text-gray-500">raw-Q weight</div>
+                      <div className="font-mono">{(record.criticEstimateBefore + qShift).toFixed(4)}</div>
+                    </div>
+                    <div className="bg-gray-50 rounded p-2">
+                      <div className="text-gray-500">advantage weight</div>
+                      <div className="font-mono">
+                        {(
+                          record.criticEstimateBefore -
+                          record.actorPolicyBefore.reduce((sum, p, a) => sum + p * (record.qBefore![record.state][a] + qShift), 0)
+                        ).toFixed(4)}
+                      </div>
+                    </div>
+                  </div>
+                  <p className="text-xs text-gray-600">
+                    平移后 raw-Q 的 Actor 权重改变，但 advantage 权重不变，因为 V_π(s) 也平移了相同的量。
+                  </p>
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>
@@ -710,7 +814,7 @@ q(S_t,A_t) &\leftarrow q(S_t,A_t) + \alpha_w \delta_t \\
 // ---------------------------------------------------------------------------
 
 function BaselineAdvantageDemo() {
-  const config = useMemo(() => buildConfig(EPISODIC_PATH_CONFIG, 'episodic'), []);
+  const config = useMemo(() => EPISODIC_PATH_CONFIG, []);
   const result = useMemo(
     () =>
       a2c(config, {
@@ -978,6 +1082,16 @@ function BaselineAdvantageDemo() {
   );
 }
 
+function sampleFromDist(dist: { nextState: number; prob: number }[], rng: () => number): number {
+  const r = rng();
+  let cum = 0;
+  for (const { nextState, prob } of dist) {
+    cum += prob;
+    if (r <= cum) return nextState;
+  }
+  return dist[dist.length - 1]?.nextState ?? 0;
+}
+
 function ExactAdvantagePanel({ config }: { config: GridWorldConfig }) {
   const numStates = config.rows * config.cols;
   const nonTerminalStates = useMemo(
@@ -986,27 +1100,63 @@ function ExactAdvantagePanel({ config }: { config: GridWorldConfig }) {
   );
   const [state, setState] = useState(0);
   const [action, setAction] = useState<Action>(1);
+  const [slip, setSlip] = useState(0);
 
   const uniformPolicy = useMemo(
     () => Array.from({ length: numStates }, () => Array.from({ length: 5 }, () => 1 / 5)),
     [numStates]
   );
-  const trueV = useMemo(() => solveStateValues(uniformPolicy, config), [uniformPolicy, config]);
-  const trueQ = useMemo(() => computeQValues(trueV, config), [trueV, config]);
-  const trueAdvantage = trueQ[state]?.[action] - trueV[state];
+
+  const { trueV, trueAdvantage } = useMemo(() => {
+    if (slip === 0) {
+      const v = solveStateValues(uniformPolicy, config);
+      const q = computeQValues(v, config);
+      return { trueV: v, trueAdvantage: q[state]?.[action] - v[state] };
+    }
+    const v = solveStateValuesWithSlip(uniformPolicy, config, slip);
+    const q = computeQValuesWithSlip(uniformPolicy, config, slip);
+    return { trueV: v, trueAdvantage: q[state]?.[action] - v[state] };
+  }, [uniformPolicy, config, state, action, slip]);
 
   const estimateResult = useMemo(() => {
     try {
-      const rng = mulberry32(42);
-      const est = sampleTdErrorAtStateAction({ config, state, action, values: trueV, rng });
-      if (est.count === 0) {
-        return { ok: false as const, error: 'Cannot sample TD error: state is terminal or no valid transition available.' };
+      if (slip === 0) {
+        const rng = mulberry32(42);
+        const est = sampleTdErrorAtStateAction({ config, state, action, values: trueV, rng });
+        if (est.count === 0) {
+          return { ok: false as const, error: 'Cannot sample TD error: state is terminal or no valid transition available.' };
+        }
+        return { ok: true as const, est, deterministic: true as const };
       }
-      return { ok: true as const, est };
+
+      const rng = mulberry32(42);
+      const samples: number[] = [];
+      for (let i = 0; i < 500; i++) {
+        const dist = stochasticTransition(state, action, config, slip);
+        const nextState = sampleFromDist(dist, rng);
+        const { reward, done } = step(state, action, config);
+        const bootstrap = done ? 0 : trueV[nextState];
+        const tdError = reward + config.gamma * bootstrap - trueV[state];
+        samples.push(tdError);
+      }
+      const mean = samples.reduce((a, b) => a + b, 0) / samples.length;
+      const variance = samples.reduce((a, b) => a + (b - mean) * (b - mean), 0) / samples.length;
+      const std = Math.sqrt(variance);
+      const se = std / Math.sqrt(samples.length);
+      const ciLower = mean - 1.96 * se;
+      const ciUpper = mean + 1.96 * se;
+      return {
+        ok: true as const,
+        est: { samples, mean, std, count: samples.length },
+        deterministic: false as const,
+        se,
+        ciLower,
+        ciUpper,
+      };
     } catch (e) {
       return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
     }
-  }, [config, state, action, trueV]);
+  }, [config, state, action, trueV, slip]);
 
   return (
     <Card>
@@ -1014,7 +1164,7 @@ function ExactAdvantagePanel({ config }: { config: GridWorldConfig }) {
         <CardTitle className="text-base">精确对照：TD error 的期望 vs 真实 Advantage</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3 text-sm">
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
           <div>
             <label className="text-sm text-gray-700 block mb-1">状态</label>
             <Select value={String(state)} onValueChange={(v) => setState(Number(v))}>
@@ -1045,6 +1195,20 @@ function ExactAdvantagePanel({ config }: { config: GridWorldConfig }) {
               </SelectContent>
             </Select>
           </div>
+          <div>
+            <label className="text-sm text-gray-700 block mb-1">随机滑移概率</label>
+            <Select value={String(slip)} onValueChange={(v) => setSlip(Number(v))}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="0">0（确定性）</SelectItem>
+                <SelectItem value="0.1">0.1</SelectItem>
+                <SelectItem value="0.2">0.2</SelectItem>
+                <SelectItem value="0.3">0.3</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </div>
         {estimateResult.ok ? (
           <>
@@ -1068,6 +1232,22 @@ function ExactAdvantagePanel({ config }: { config: GridWorldConfig }) {
                 </div>
               </div>
             </div>
+            {'deterministic' in estimateResult && !estimateResult.deterministic && (
+              <div className="grid grid-cols-3 gap-3">
+                <div className="bg-gray-50 rounded p-2">
+                  <div className="text-gray-500 text-xs">标准误 SE</div>
+                  <div className="font-mono">{estimateResult.se.toFixed(4)}</div>
+                </div>
+                <div className="bg-gray-50 rounded p-2">
+                  <div className="text-gray-500 text-xs">95% CI 下限</div>
+                  <div className="font-mono">{estimateResult.ciLower.toFixed(4)}</div>
+                </div>
+                <div className="bg-gray-50 rounded p-2">
+                  <div className="text-gray-500 text-xs">95% CI 上限</div>
+                  <div className="font-mono">{estimateResult.ciUpper.toFixed(4)}</div>
+                </div>
+              </div>
+            )}
             <div className="text-xs text-gray-600">sample count: {estimateResult.est.count}</div>
           </>
         ) : (
@@ -1076,7 +1256,9 @@ function ExactAdvantagePanel({ config }: { config: GridWorldConfig }) {
           </div>
         )}
         <p className="text-xs text-gray-600">
-          用真实 V_π 作为 Critic，从指定 (s,a) 直接执行一步得到 TD error。确定性环境下标准差为 0，样本均值应等于真实 advantage。
+          {slip === 0
+            ? '确定性环境：标准差为 0，count=1 的样本均值即为真实 advantage。'
+            : '随机滑移环境：运行 500 个种子得到 Monte Carlo 估计，标准误与置信区间衡量估计精度。'}
         </p>
       </CardContent>
     </Card>
@@ -1094,8 +1276,9 @@ function A2cDemo() {
   const [actorAlpha, setActorAlpha] = useState(0.05);
   const [criticAlpha, setCriticAlpha] = useState(0.1);
   const [episodes, setEpisodes] = useState(80);
+  const [bootstrapOnTruncation, setBootstrapOnTruncation] = useState(true);
 
-  const config = useMemo(() => buildConfig(EPISODIC_PATH_CONFIG, taskType), [taskType]);
+  const config = useMemo(() => configFromTask(taskType), [taskType]);
   const result = useMemo(
     () =>
       a2c(config, {
@@ -1104,8 +1287,9 @@ function A2cDemo() {
         actorAlpha,
         criticAlpha,
         episodes,
+        bootstrapOnTruncation,
       }),
-    [config, seed, horizonH, actorAlpha, criticAlpha, episodes]
+    [config, seed, horizonH, actorAlpha, criticAlpha, episodes, bootstrapOnTruncation]
   );
   const [step, setStep] = useState(0);
   const record = result.updates[Math.min(step, result.updates.length - 1)];
@@ -1191,7 +1375,10 @@ v(S_t) &\leftarrow v(S_t) + \alpha_w \delta_t \\
                 setCriticAlpha={setCriticAlpha}
                 episodes={episodes}
                 setEpisodes={setEpisodes}
+                bootstrapOnTruncation={bootstrapOnTruncation}
+                setBootstrapOnTruncation={setBootstrapOnTruncation}
               />
+              <div className="mt-3 text-xs text-gray-600">{configDescription(config)}</div>
             </CardContent>
           </Card>
           <Card>
@@ -1232,10 +1419,23 @@ function OffPolicyDemo() {
   const [epsilon, setEpsilon] = useState(0.5);
   const [episodes, setEpisodes] = useState(80);
   const [variant, setVariant] = useState<'textbook' | 'extended'>('textbook');
+  const [bootstrapOnTruncation, setBootstrapOnTruncation] = useState(true);
+  const [importanceMode, setImportanceMode] = useState<'raw' | 'clipped'>('raw');
+  const [clipThreshold, setClipThreshold] = useState(10);
 
-  const config = useMemo(() => buildConfig(EPISODIC_PATH_CONFIG, taskType), [taskType]);
+  const config = useMemo(() => configFromTask(taskType), [taskType]);
   const result = useMemo(() => {
-    const options = { seed, horizonH, actorAlpha, criticAlpha, episodes, epsilon };
+    const options = {
+      seed,
+      horizonH,
+      actorAlpha,
+      criticAlpha,
+      episodes,
+      epsilon,
+      bootstrapOnTruncation,
+      importanceMode,
+      clipThreshold,
+    };
     try {
       return variant === 'textbook'
         ? offPolicyActorCritic(config, options)
@@ -1243,7 +1443,7 @@ function OffPolicyDemo() {
     } catch (err) {
       return null;
     }
-  }, [config, seed, horizonH, actorAlpha, criticAlpha, episodes, epsilon, variant]);
+  }, [config, seed, horizonH, actorAlpha, criticAlpha, episodes, epsilon, variant, bootstrapOnTruncation, importanceMode, clipThreshold]);
 
   const [step, setStep] = useState(0);
   const record = result ? result.updates[Math.min(step, result.updates.length - 1)] : undefined;
@@ -1259,13 +1459,34 @@ function OffPolicyDemo() {
 
   const rhoStats = useMemo(() => {
     if (!result) return null;
-    const rhos = result.updates.map((u) => u.rho ?? 1);
-    const maxRho = Math.max(...rhos);
-    const meanRho = rhos.reduce((a, b) => a + b, 0) / rhos.length;
-    const clipped = rhos.filter((r) => r > 10).length / rhos.length;
-    const ess = effectiveSampleSize(rhos);
-    return { maxRho, meanRho, clipped, ess };
+    const rawRhos = result.updates.map((u) => u.rawRho ?? u.rho ?? 1);
+    const usedRhos = result.updates.map((u) => u.usedRho ?? u.rho ?? 1);
+    const maxRaw = Math.max(...rawRhos);
+    const maxUsed = Math.max(...usedRhos);
+    const meanRaw = rawRhos.reduce((a, b) => a + b, 0) / rawRhos.length;
+    const meanUsed = usedRhos.reduce((a, b) => a + b, 0) / usedRhos.length;
+    const clippedCount = result.updates.filter((u) => u.wasClipped).length;
+    const clippedRatio = clippedCount / result.updates.length;
+    const essRaw = effectiveSampleSize(rawRhos);
+    const essUsed = effectiveSampleSize(usedRhos);
+    return { maxRaw, maxUsed, meanRaw, meanUsed, clippedRatio, essRaw, essUsed, rawRhos, usedRhos };
   }, [result]);
+
+  const histogram = useMemo(() => {
+    if (!rhoStats) return null;
+    const bins = [0, 1, 2, 5, 10, 20, 50, 100];
+    const rawCounts = new Array(bins.length).fill(0);
+    const usedCounts = new Array(bins.length).fill(0);
+    for (const r of rhoStats.rawRhos) {
+      const idx = bins.findIndex((_, i) => (bins[i + 1] === undefined ? true : r < bins[i + 1]));
+      rawCounts[idx]++;
+    }
+    for (const r of rhoStats.usedRhos) {
+      const idx = bins.findIndex((_, i) => (bins[i + 1] === undefined ? true : r < bins[i + 1]));
+      usedCounts[idx]++;
+    }
+    return { bins, rawCounts, usedCounts };
+  }, [rhoStats]);
 
   return (
     <InteractiveDemo title="异策略 Actor-Critic：重要性采样修正">
@@ -1297,7 +1518,7 @@ function OffPolicyDemo() {
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <TransitionCard record={record} />
-                  <div className="grid grid-cols-2 gap-3 text-sm">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
                     <div className="bg-gray-50 rounded p-2">
                       <div className="text-gray-500 text-xs">target π(A|S)</div>
                       <div className="font-mono">{record.targetProb?.toFixed(4)}</div>
@@ -1306,13 +1527,16 @@ function OffPolicyDemo() {
                       <div className="text-gray-500 text-xs">behavior β(A|S)</div>
                       <div className="font-mono">{record.behaviorProb?.toFixed(4)}</div>
                     </div>
-                    <div className="bg-blue-50 rounded p-2 border border-blue-100">
-                      <div className="text-blue-700 text-xs">ρ = π/β</div>
-                      <div className="font-mono font-semibold">{record.rho?.toFixed(4)}</div>
-                    </div>
                     <div className="bg-gray-50 rounded p-2">
-                      <div className="text-gray-500 text-xs">校正前 actor weight</div>
-                      <div className="font-mono">{(record.actorWeight / (record.rho ?? 1)).toFixed(4)}</div>
+                      <div className="text-gray-500 text-xs">raw ρ</div>
+                      <div className="font-mono">{record.rawRho?.toFixed(4) ?? record.rho?.toFixed(4)}</div>
+                    </div>
+                    <div className="bg-blue-50 rounded p-2 border border-blue-100">
+                      <div className="text-blue-700 text-xs">used ρ</div>
+                      <div className="font-mono font-semibold">
+                        {record.usedRho?.toFixed(4) ?? record.rho?.toFixed(4)}
+                        {record.wasClipped && <span className="ml-1 text-amber-600 text-xs">(clipped)</span>}
+                      </div>
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-3">
@@ -1347,23 +1571,58 @@ function OffPolicyDemo() {
                   <CardHeader className="pb-2">
                     <CardTitle className="text-base">ρ 统计</CardTitle>
                   </CardHeader>
-                  <CardContent className="grid grid-cols-4 gap-3 text-sm">
-                    <div className="bg-gray-50 rounded p-2">
-                      <div className="text-gray-500 text-xs">max ρ</div>
-                      <div className="font-mono">{rhoStats.maxRho.toFixed(2)}</div>
+                  <CardContent className="space-y-3 text-sm">
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                      <div className="bg-gray-50 rounded p-2">
+                        <div className="text-gray-500 text-xs">max raw ρ</div>
+                        <div className="font-mono">{rhoStats.maxRaw.toFixed(2)}</div>
+                      </div>
+                      <div className="bg-gray-50 rounded p-2">
+                        <div className="text-gray-500 text-xs">max used ρ</div>
+                        <div className="font-mono">{rhoStats.maxUsed.toFixed(2)}</div>
+                      </div>
+                      <div className="bg-gray-50 rounded p-2">
+                        <div className="text-gray-500 text-xs">clip 比例</div>
+                        <div className="font-mono">{(rhoStats.clippedRatio * 100).toFixed(1)}%</div>
+                      </div>
+                      <div className="bg-gray-50 rounded p-2">
+                        <div className="text-gray-500 text-xs">ESS used</div>
+                        <div className="font-mono">{rhoStats.essUsed.toFixed(2)}</div>
+                      </div>
                     </div>
-                    <div className="bg-gray-50 rounded p-2">
-                      <div className="text-gray-500 text-xs">mean ρ</div>
-                      <div className="font-mono">{rhoStats.meanRho.toFixed(2)}</div>
-                    </div>
-                    <div className="bg-gray-50 rounded p-2">
-                      <div className="text-gray-500 text-xs">ρ&gt;10 样本比例（未 clip）</div>
-                      <div className="font-mono">{(rhoStats.clipped * 100).toFixed(1)}%</div>
-                    </div>
-                    <div className="bg-gray-50 rounded p-2">
-                      <div className="text-gray-500 text-xs">ESS</div>
-                      <div className="font-mono">{rhoStats.ess.toFixed(2)}</div>
-                    </div>
+                    {histogram && (
+                      <div className="space-y-2">
+                        <div className="text-xs text-gray-500">ρ 分布直方图（raw / used）</div>
+                        <div className="space-y-1">
+                          {histogram.bins.map((bin, i) => {
+                            const rawCount = histogram.rawCounts[i];
+                            const usedCount = histogram.usedCounts[i];
+                            const maxCount = Math.max(...histogram.rawCounts, ...histogram.usedCounts, 1);
+                            const label =
+                              i === histogram.bins.length - 1 ? `≥ ${bin}` : `[${bin}, ${histogram.bins[i + 1]})`;
+                            return (
+                              <div key={i} className="flex items-center gap-2 text-xs">
+                                <span className="w-16 text-gray-500">{label}</span>
+                                <div className="flex-1 h-4 bg-gray-100 rounded overflow-hidden relative">
+                                  <div
+                                    className="absolute top-0 left-0 h-full bg-blue-400"
+                                    style={{ width: `${(rawCount / maxCount) * 100}%` }}
+                                  />
+                                  <div
+                                    className="absolute top-0 left-0 h-full bg-amber-400 opacity-70"
+                                    style={{ width: `${(usedCount / maxCount) * 100}%` }}
+                                  />
+                                </div>
+                                <span className="w-20 text-right font-mono">{rawCount}/{usedCount}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <p className="text-xs text-gray-600">
+                          蓝色为 raw ρ，琥珀色为 used ρ。Clipping 降低方差但引入偏差，ESS 反映有效样本量。
+                        </p>
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
               )}
@@ -1402,9 +1661,27 @@ function OffPolicyDemo() {
                 setCriticAlpha={setCriticAlpha}
                 episodes={episodes}
                 setEpisodes={setEpisodes}
+                bootstrapOnTruncation={bootstrapOnTruncation}
+                setBootstrapOnTruncation={setBootstrapOnTruncation}
               >
                 <Param label="行为策略 ε" value={epsilon} set={setEpsilon} min={0.05} max={1} step={0.05} fixed={2} />
+                <div>
+                  <label className="text-sm text-gray-700 block mb-1">重要性采样模式</label>
+                  <Select value={importanceMode} onValueChange={(v) => setImportanceMode(v as 'raw' | 'clipped')}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="raw">raw（无偏，方差大）</SelectItem>
+                      <SelectItem value="clipped">clipped（有偏，方差小）</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {importanceMode === 'clipped' && (
+                  <Param label="clip 阈值" value={clipThreshold} set={setClipThreshold} min={1} max={100} step={1} fixed={0} />
+                )}
               </DiscreteControlPanel>
+              <div className="mt-3 text-xs text-gray-600">{configDescription(config)}</div>
             </CardContent>
           </Card>
           {result && (

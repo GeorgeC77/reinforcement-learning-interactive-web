@@ -11,6 +11,8 @@
     "test:fa": "npx tsx scripts/run-fa-tests.ts",
     "test:pg": "npx tsx scripts/run-pg-tests.ts",
     "test:ac": "npx tsx scripts/run-ac-tests.ts",
+    "test:smoke": "npx tsx scripts/consistency-scan.ts",
+    "test:all": "npm run test:sa && npm run test:td && npm run test:fa && npm run test:pg && npm run test:ac && npm run test:smoke",
     "lint": "eslint .",
     "preview": "vite preview"
   },
