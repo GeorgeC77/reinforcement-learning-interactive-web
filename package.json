@@ -12,6 +12,7 @@
     "test:pg": "npx tsx scripts/run-pg-tests.ts",
     "test:ac": "npx tsx scripts/run-ac-tests.ts",
     "test:smoke": "npx tsx scripts/consistency-scan.ts",
+    "test:e2e": "playwright test",
     "test:all": "npm run test:sa && npm run test:td && npm run test:fa && npm run test:pg && npm run test:ac && npm run test:smoke",
     "lint": "eslint .",
     "preview": "vite preview"
@@ -73,6 +74,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
+    "@playwright/test": "^1.61.1",
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.5",
     "@types/react-dom": "^19.2.3",

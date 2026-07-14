@@ -1,8 +1,12 @@
 import {
   EPISODIC_PATH_CONFIG,
+  DEFAULT_CONFIG,
   solveStateValues,
   computeQValues,
   isTerminal,
+  stochasticStepDistribution,
+  type StochasticOutcome,
+  type Action,
 } from './gridworld';
 import {
   qac,
@@ -24,6 +28,7 @@ import {
   type ACOptions,
   type ACResult,
 } from './actorCritic';
+import { mulberry32 } from './stochasticApproximation';
 
 function assert(cond: boolean, msg: string) {
   if (!cond) throw new Error(`Test failed: ${msg}`);
@@ -640,5 +645,95 @@ export function runACTests() {
   const totalLength = metricRes.episodes.reduce((sum, ep) => sum + ep.episodeLength, 0);
   assert(near(metricSeries[metricSeries.length - 1].overallAverageEpisodeLength, totalLength / metricRes.episodes.length, 1e-9), 'overall average episode length matches');
 
+  // 45. stochasticStepDistribution keeps full outcomes (same nextState can have different rewards)
+  const cornerOutcomes = stochasticStepDistribution(0, 4 as Action, EPISODIC_PATH_CONFIG, 0.2);
+  const stayOutcome = cornerOutcomes.find((o) => o.actualAction === 4)!;
+  const upOutcome = cornerOutcomes.find((o) => o.actualAction === 0)!;
+  assert(stayOutcome !== undefined, 'intended stay outcome exists');
+  assert(upOutcome !== undefined, 'slip-up outcome exists');
+  assert(stayOutcome.nextState === 0 && upOutcome.nextState === 0, 'stay and up both lead to state 0');
+  assert(stayOutcome.reward === -1 && upOutcome.reward === -10, 'same nextState but different rewards are preserved');
+
+  // 46. slip into forbidden state uses forbiddenReward
+  const centerOutcomes = stochasticStepDistribution(4, 0 as Action, EPISODIC_PATH_CONFIG, 0.2);
+  const slipRight = centerOutcomes.find((o) => o.actualAction === 1)!;
+  assert(slipRight !== undefined, 'slip-right outcome exists');
+  assert(slipRight.nextState === 5, 'slip-right enters forbidden state 5');
+  assert(slipRight.reward === -10, 'forbidden transition reward is forbiddenReward');
+
+  // 47. slip into target in episodic task sets done=true and omits bootstrap in solver
+  const nearTargetOutcomes = stochasticStepDistribution(7, 4 as Action, EPISODIC_PATH_CONFIG, 0.2);
+  const slipTarget = nearTargetOutcomes.find((o) => o.actualAction === 1)!;
+  assert(slipTarget !== undefined, 'slip-right to target exists');
+  assert(slipTarget.nextState === 8, 'slip-right reaches target');
+  assert(slipTarget.done === true, 'reaching target in episodic task is terminal');
+
+  // 48. outcome probabilities sum to 1
+  for (const cfg of [EPISODIC_PATH_CONFIG, DEFAULT_CONFIG]) {
+    for (let s = 0; s < cfg.rows * cfg.cols; s++) {
+      if (isTerminal(s, cfg)) continue;
+      for (let a = 0; a < 5; a++) {
+        const outcomes = stochasticStepDistribution(s, a as Action, cfg, 0.2);
+        const total = outcomes.reduce((sum, o) => sum + o.prob, 0);
+        assert(near(total, 1, 1e-9), `outcome probabilities sum to 1 at (${s},${a})`);
+      }
+    }
+  }
+
+  // 49. slip=0 stochastic solver still matches deterministic solver
+  const uniformSlipPolicy = Array.from({ length: 9 }, () => Array.from({ length: 5 }, () => 1 / 5));
+  const detValues2 = solveStateValues(uniformSlipPolicy, exactConfig);
+  const slip0Values = solveStateValuesWithSlip(uniformSlipPolicy, exactConfig, 0);
+  detValues2.forEach((v, s) => assert(near(v, slip0Values[s], 1e-9), `slip=0 values match deterministic at state ${s}`));
+  const detQ2 = computeQValues(detValues2, exactConfig);
+  const slip0Q = computeQValuesWithSlip(uniformSlipPolicy, exactConfig, 0);
+  detQ2.forEach((row, s) =>
+    row.forEach((q, a) => assert(near(q, slip0Q[s][a], 1e-9), `slip=0 Q matches deterministic at (${s},${a})`))
+  );
+
+  // 39b. Q-shift invariance: shifting all Q(s,·) by a state-dependent constant changes raw-Q but not advantage
+  const qacShiftRes = qac(EPISODIC_PATH_CONFIG, { ...defaultOptions, episodes: 5, actorWeightMode: 'raw-q' });
+  for (const shift of [-5, -1, 0, 1, 5]) {
+    for (const u of qacShiftRes.updates) {
+      const qRow = u.qBefore![u.state];
+      const vPi = u.actorPolicyBefore.reduce((sum, p, a) => sum + p * qRow[a], 0);
+      const rawOriginal = u.criticEstimateBefore;
+      const rawShifted = rawOriginal + shift;
+      const vPiShifted = u.actorPolicyBefore.reduce((sum, p, a) => sum + p * (qRow[a] + shift), 0);
+      const advOriginal = rawOriginal - vPi;
+      const advShifted = rawShifted - vPiShifted;
+      assert(near(advShifted, advOriginal, 1e-9), `Q-shift ${shift} leaves advantage unchanged at (${u.state},${u.action})`);
+    }
+  }
+
+  // 50. Monte Carlo TD-error mean approximates true advantage under slip
+  const slipForMc = 0.2;
+  const mcTrueV = solveStateValuesWithSlip(uniformSlipPolicy, exactConfig, slipForMc);
+  const mcTrueQ = computeQValuesWithSlip(uniformSlipPolicy, exactConfig, slipForMc);
+  const mcState = 0;
+  const mcAction = 1 as Action;
+  const mcTrueAdvantage = mcTrueQ[mcState][mcAction] - mcTrueV[mcState];
+  const outcomes = stochasticStepDistribution(mcState, mcAction, exactConfig, slipForMc);
+  const rng = mulberry32(123);
+  const mcSamples: number[] = [];
+  for (let i = 0; i < 5000; i++) {
+    const outcome = sampleOutcome(outcomes, rng);
+    const bootstrap = outcome.done ? 0 : mcTrueV[outcome.nextState];
+    const tdError = outcome.reward + exactConfig.gamma * bootstrap - mcTrueV[mcState];
+    mcSamples.push(tdError);
+  }
+  const mcMean = mcSamples.reduce((a, b) => a + b, 0) / mcSamples.length;
+  assert(Math.abs(mcMean - mcTrueAdvantage) < 0.2, `Monte Carlo TD-error mean ${mcMean.toFixed(4)} approximates true advantage ${mcTrueAdvantage.toFixed(4)}`);
+
   console.log('✅ Actor-Critic tests passed');
+}
+
+function sampleOutcome(outcomes: StochasticOutcome[], rng: () => number): StochasticOutcome {
+  const r = rng();
+  let cum = 0;
+  for (const outcome of outcomes) {
+    cum += outcome.prob;
+    if (r <= cum) return outcome;
+  }
+  return outcomes[outcomes.length - 1];
 }

@@ -29,8 +29,8 @@ import {
   computeQValues,
   actionValueToStateValue,
   isTerminal,
-  step,
-  stochasticTransition,
+  stochasticStepDistribution,
+  type StochasticOutcome,
 } from '@/lib/rl/gridworld';
 import { mulberry32 } from '@/lib/rl/stochasticApproximation';
 import {
@@ -781,23 +781,44 @@ q(S_t,A_t) &\leftarrow q(S_t,A_t) + \alpha_w \delta_t \\
               <Param label="平移量 c(s)" value={qShift} set={setQShift} min={-5} max={5} step={0.5} fixed={1} />
               {record && (
                 <div className="space-y-2">
-                  <div className="grid grid-cols-2 gap-2 text-xs">
-                    <div className="bg-gray-50 rounded p-2">
-                      <div className="text-gray-500">raw-Q weight</div>
-                      <div className="font-mono">{(record.criticEstimateBefore + qShift).toFixed(4)}</div>
-                    </div>
-                    <div className="bg-gray-50 rounded p-2">
-                      <div className="text-gray-500">advantage weight</div>
-                      <div className="font-mono">
-                        {(
-                          record.criticEstimateBefore -
-                          record.actorPolicyBefore.reduce((sum, p, a) => sum + p * (record.qBefore![record.state][a] + qShift), 0)
-                        ).toFixed(4)}
+                  {(() => {
+                    const qRow = record.qBefore![record.state];
+                    const vPi = record.actorPolicyBefore.reduce((sum, p, a) => sum + p * qRow[a], 0);
+                    const rawOriginal = record.criticEstimateBefore;
+                    const rawShifted = rawOriginal + qShift;
+                    const advOriginal = rawOriginal - vPi;
+                    const vPiShifted = record.actorPolicyBefore.reduce(
+                      (sum, p, a) => sum + p * (qRow[a] + qShift),
+                      0
+                    );
+                    const advShifted = rawShifted - vPiShifted;
+                    return (
+                      <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs">
+                        <div className="bg-gray-50 rounded p-2">
+                          <div className="text-gray-500">原始 raw-Q</div>
+                          <div className="font-mono">{rawOriginal.toFixed(4)}</div>
+                        </div>
+                        <div className="bg-gray-50 rounded p-2">
+                          <div className="text-gray-500">平移后 raw-Q</div>
+                          <div className="font-mono">{rawShifted.toFixed(4)}</div>
+                        </div>
+                        <div className="bg-gray-50 rounded p-2">
+                          <div className="text-gray-500">原始 Advantage</div>
+                          <div className="font-mono">{advOriginal.toFixed(4)}</div>
+                        </div>
+                        <div className="bg-gray-50 rounded p-2">
+                          <div className="text-gray-500">平移后 Advantage</div>
+                          <div className="font-mono">{advShifted.toFixed(4)}</div>
+                        </div>
+                        <div className="bg-blue-50 rounded p-2 border border-blue-100">
+                          <div className="text-blue-700">Advantage 变化</div>
+                          <div className="font-mono">{(advShifted - advOriginal).toFixed(4)}</div>
+                        </div>
                       </div>
-                    </div>
-                  </div>
+                    );
+                  })()}
                   <p className="text-xs text-gray-600">
-                    平移后 raw-Q 的 Actor 权重改变，但 advantage 权重不变，因为 V_π(s) 也平移了相同的量。
+                    平移后 raw-Q 的 Actor 权重改变，但 Advantage 权重不变，因为 V_π(s) 也平移了相同的量。
                   </p>
                 </div>
               )}
@@ -1082,14 +1103,14 @@ function BaselineAdvantageDemo() {
   );
 }
 
-function sampleFromDist(dist: { nextState: number; prob: number }[], rng: () => number): number {
+function sampleStochasticOutcome(outcomes: StochasticOutcome[], rng: () => number): StochasticOutcome {
   const r = rng();
   let cum = 0;
-  for (const { nextState, prob } of dist) {
-    cum += prob;
-    if (r <= cum) return nextState;
+  for (const outcome of outcomes) {
+    cum += outcome.prob;
+    if (r <= cum) return outcome;
   }
-  return dist[dist.length - 1]?.nextState ?? 0;
+  return outcomes[outcomes.length - 1];
 }
 
 function ExactAdvantagePanel({ config }: { config: GridWorldConfig }) {
@@ -1129,14 +1150,15 @@ function ExactAdvantagePanel({ config }: { config: GridWorldConfig }) {
         return { ok: true as const, est, deterministic: true as const };
       }
 
+      const outcomes = stochasticStepDistribution(state, action, config, slip);
       const rng = mulberry32(42);
       const samples: number[] = [];
+      let lastOutcome: StochasticOutcome | undefined;
       for (let i = 0; i < 500; i++) {
-        const dist = stochasticTransition(state, action, config, slip);
-        const nextState = sampleFromDist(dist, rng);
-        const { reward, done } = step(state, action, config);
-        const bootstrap = done ? 0 : trueV[nextState];
-        const tdError = reward + config.gamma * bootstrap - trueV[state];
+        const outcome = sampleStochasticOutcome(outcomes, rng);
+        lastOutcome = outcome;
+        const bootstrap = outcome.done ? 0 : trueV[outcome.nextState];
+        const tdError = outcome.reward + config.gamma * bootstrap - trueV[state];
         samples.push(tdError);
       }
       const mean = samples.reduce((a, b) => a + b, 0) / samples.length;
@@ -1152,6 +1174,7 @@ function ExactAdvantagePanel({ config }: { config: GridWorldConfig }) {
         se,
         ciLower,
         ciUpper,
+        lastOutcome,
       };
     } catch (e) {
       return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
@@ -1233,20 +1256,35 @@ function ExactAdvantagePanel({ config }: { config: GridWorldConfig }) {
               </div>
             </div>
             {'deterministic' in estimateResult && !estimateResult.deterministic && (
-              <div className="grid grid-cols-3 gap-3">
-                <div className="bg-gray-50 rounded p-2">
-                  <div className="text-gray-500 text-xs">标准误 SE</div>
-                  <div className="font-mono">{estimateResult.se.toFixed(4)}</div>
+              <>
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="bg-gray-50 rounded p-2">
+                    <div className="text-gray-500 text-xs">标准误 SE</div>
+                    <div className="font-mono">{estimateResult.se.toFixed(4)}</div>
+                  </div>
+                  <div className="bg-gray-50 rounded p-2">
+                    <div className="text-gray-500 text-xs">95% normal-approx CI 下限</div>
+                    <div className="font-mono">{estimateResult.ciLower.toFixed(4)}</div>
+                  </div>
+                  <div className="bg-gray-50 rounded p-2">
+                    <div className="text-gray-500 text-xs">95% normal-approx CI 上限</div>
+                    <div className="font-mono">{estimateResult.ciUpper.toFixed(4)}</div>
+                  </div>
                 </div>
-                <div className="bg-gray-50 rounded p-2">
-                  <div className="text-gray-500 text-xs">95% CI 下限</div>
-                  <div className="font-mono">{estimateResult.ciLower.toFixed(4)}</div>
-                </div>
-                <div className="bg-gray-50 rounded p-2">
-                  <div className="text-gray-500 text-xs">95% CI 上限</div>
-                  <div className="font-mono">{estimateResult.ciUpper.toFixed(4)}</div>
-                </div>
-              </div>
+                {estimateResult.lastOutcome && (
+                  <div className="bg-blue-50 rounded p-2 border border-blue-100 text-xs space-y-1">
+                    <div className="font-medium text-blue-700">最后一次抽样 outcome</div>
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                      <div>intended: {ACTION_NAMES[estimateResult.lastOutcome.intendedAction]}</div>
+                      <div>actual: {ACTION_NAMES[estimateResult.lastOutcome.actualAction]}</div>
+                      <div>slip: {estimateResult.lastOutcome.actualAction !== estimateResult.lastOutcome.intendedAction ? '是' : '否'}</div>
+                      <div>next: s{estimateResult.lastOutcome.nextState + 1}</div>
+                      <div>reward: {estimateResult.lastOutcome.reward.toFixed(2)}</div>
+                      <div>done: {estimateResult.lastOutcome.done ? '是' : '否'}</div>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
             <div className="text-xs text-gray-600">sample count: {estimateResult.est.count}</div>
           </>
@@ -1258,7 +1296,7 @@ function ExactAdvantagePanel({ config }: { config: GridWorldConfig }) {
         <p className="text-xs text-gray-600">
           {slip === 0
             ? '确定性环境：标准差为 0，count=1 的样本均值即为真实 advantage。'
-            : '随机滑移环境：运行 500 个种子得到 Monte Carlo 估计，标准误与置信区间衡量估计精度。'}
+            : '随机滑移环境：固定 seed 下进行 500 次可复现 Monte Carlo 抽样，使用完整 outcome（actual action、reward、done）计算 TD error。'}
         </p>
       </CardContent>
     </Card>
@@ -1410,6 +1448,25 @@ v(S_t) &\leftarrow v(S_t) + \alpha_w \delta_t \\
 // 5. Off-policy AC
 // ---------------------------------------------------------------------------
 
+type OffPolicyResultState =
+  | { ok: true; data: ACResult }
+  | { ok: false; error: string; reason: 'coverage' | 'divergence' | 'invalid' | 'unknown' };
+
+function classifyOffPolicyError(err: unknown): OffPolicyResultState {
+  const msg = err instanceof Error ? err.message : String(err);
+  const lower = msg.toLowerCase();
+  if (lower.includes('coverage') || lower.includes('support') || msg.includes('覆盖')) {
+    return { ok: false, error: msg, reason: 'coverage' };
+  }
+  if (lower.includes('diverg') || lower.includes('numerical') || lower.includes('infinity') || msg.includes('数值')) {
+    return { ok: false, error: msg, reason: 'divergence' };
+  }
+  if (lower.includes('invalid') || msg.includes('参数')) {
+    return { ok: false, error: msg, reason: 'invalid' };
+  }
+  return { ok: false, error: msg, reason: 'unknown' };
+}
+
 function OffPolicyDemo() {
   const [seed, setSeed] = useState(42);
   const [horizonH, setHorizonH] = useState(30);
@@ -1419,12 +1476,13 @@ function OffPolicyDemo() {
   const [epsilon, setEpsilon] = useState(0.5);
   const [episodes, setEpisodes] = useState(80);
   const [variant, setVariant] = useState<'textbook' | 'extended'>('textbook');
+  const [valueMode, setValueMode] = useState<'target' | 'greedy'>('target');
   const [bootstrapOnTruncation, setBootstrapOnTruncation] = useState(true);
   const [importanceMode, setImportanceMode] = useState<'raw' | 'clipped'>('raw');
   const [clipThreshold, setClipThreshold] = useState(10);
 
   const config = useMemo(() => configFromTask(taskType), [taskType]);
-  const result = useMemo(() => {
+  const resultState = useMemo<OffPolicyResultState>(() => {
     const options = {
       seed,
       horizonH,
@@ -1437,13 +1495,16 @@ function OffPolicyDemo() {
       clipThreshold,
     };
     try {
-      return variant === 'textbook'
-        ? offPolicyActorCritic(config, options)
-        : qBasedOffPolicyActorCritic(config, options);
+      const data =
+        variant === 'textbook'
+          ? offPolicyActorCritic(config, options)
+          : qBasedOffPolicyActorCritic(config, options);
+      return { ok: true, data };
     } catch (err) {
-      return null;
+      return classifyOffPolicyError(err);
     }
   }, [config, seed, horizonH, actorAlpha, criticAlpha, episodes, epsilon, variant, bootstrapOnTruncation, importanceMode, clipThreshold]);
+  const result = resultState.ok ? resultState.data : null;
 
   const [step, setStep] = useState(0);
   const record = result ? result.updates[Math.min(step, result.updates.length - 1)] : undefined;
@@ -1451,14 +1512,18 @@ function OffPolicyDemo() {
   const values = useMemo(() => {
     if (!record) return new Array(config.rows * config.cols).fill(0);
     if (variant === 'textbook' && record.vAfter) return record.vAfter;
-    if (variant === 'extended' && record.qAfter) return actionValueToStateValue(record.qAfter);
+    if (variant === 'extended' && record.qAfter) {
+      return valueMode === 'target'
+        ? policyWeightedStateValues(record.qAfter, record.actorFullPolicyAfter!)
+        : actionValueToStateValue(record.qAfter);
+    }
     return new Array(config.rows * config.cols).fill(0);
-  }, [record, variant, config.rows, config.cols]);
+  }, [record, variant, valueMode, config.rows, config.cols]);
 
   const policy = record?.actorFullPolicyAfter ?? Array.from({ length: config.rows * config.cols }, () => Array.from({ length: 5 }, () => 1 / 5));
 
   const rhoStats = useMemo(() => {
-    if (!result) return null;
+    if (!result || result.updates.length === 0) return null;
     const rawRhos = result.updates.map((u) => u.rawRho ?? u.rho ?? 1);
     const usedRhos = result.updates.map((u) => u.usedRho ?? u.rho ?? 1);
     const maxRaw = Math.max(...rawRhos);
@@ -1502,10 +1567,19 @@ function OffPolicyDemo() {
             }
             description="ρ 修正单步动作采样分布，使目标策略梯度期望成立；但它不自动修正状态访问分布。"
           />
-          {!result && (
+          {!resultState.ok && (
             <div className="flex items-center gap-2 text-red-600 bg-red-50 p-3 rounded-lg border border-red-200 text-sm">
               <AlertTriangle className="w-4 h-4" />
-              行为策略未覆盖目标策略动作。请增大 ε 或检查策略支持。
+              <span>
+                {resultState.reason === 'coverage'
+                  ? '行为策略未覆盖目标策略动作。请增大 ε 或检查策略支持。'
+                  : resultState.reason === 'divergence'
+                  ? '训练数值发散，请减小学习率或检查奖励尺度。'
+                  : resultState.reason === 'invalid'
+                  ? '参数非法：'
+                  : '运行错误：'}
+                {resultState.error}
+              </span>
             </div>
           )}
           {record && (
@@ -1644,10 +1718,24 @@ function OffPolicyDemo() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="textbook">教材版：V-based + ρ</SelectItem>
-                    <SelectItem value="extended">扩展版：Q-based + ρ</SelectItem>
+                    <SelectItem value="extended">教材拓展：Q-based off-policy Actor-Critic</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
+              {variant === 'extended' && (
+                <div>
+                  <label className="text-sm text-gray-700 block mb-1">Q-based 值函数显示</label>
+                  <Select value={valueMode} onValueChange={(v) => setValueMode(v as 'target' | 'greedy')}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="target">target-policy V_π(s) = Σ π(a|s) Q(s,a)</SelectItem>
+                      <SelectItem value="greedy">greedy-derived max_a Q(s,a)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
               <DiscreteControlPanel
                 seed={seed}
                 setSeed={setSeed}

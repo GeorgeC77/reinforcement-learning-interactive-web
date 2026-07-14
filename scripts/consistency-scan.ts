@@ -1,24 +1,36 @@
 /**
  * Site-wide consistency scan.
  *
- * Checks that are cheap and deterministic enough to run in CI.
+ * Uses the TypeScript AST for robust, source-accurate checks instead of fragile
+ * string slicing. Checks are split into errors (block CI) and warnings
+ * (require manual review but do not fail the scan).
  */
 
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
+import ts from 'typescript';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const root = path.resolve(__dirname, '..');
 
-interface Issue {
+interface Finding {
   file: string;
   line: number;
   message: string;
 }
 
-const issues: Issue[] = [];
+const errors: Finding[] = [];
+const warnings: Finding[] = [];
+
+function reportError(file: string, line: number, message: string) {
+  errors.push({ file: path.relative(root, file), line, message });
+}
+
+function reportWarning(file: string, line: number, message: string) {
+  warnings.push({ file: path.relative(root, file), line, message });
+}
 
 function walk(dir: string, filter: (p: string) => boolean): string[] {
   const out: string[] = [];
@@ -34,49 +46,61 @@ function walk(dir: string, filter: (p: string) => boolean): string[] {
   return out;
 }
 
-function report(file: string, line: number, message: string) {
-  issues.push({ file: path.relative(root, file), line, message });
+function lineOf(source: string, pos: number): number {
+  let line = 1;
+  for (let i = 0; i < pos && i < source.length; i++) {
+    if (source[i] === '\n') line++;
+  }
+  return line;
+}
+
+function parseSource(file: string): ts.SourceFile {
+  return ts.createSourceFile(file, fs.readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
 }
 
 // ---------------------------------------------------------------------------
-// 1. No unseeded Math.random() in core RL algorithm files.
-//    (Older shared utilities such as gridworld.ts intentionally retain
-//     unseeded helpers for non-AC chapters and are out of scope here.)
+// 1. Core AC/PG/SA algorithm files must not call Math.random().
+//    (gridworld.ts intentionally retains legacy unseeded helpers for older
+//     chapters and is reviewed separately.)
 // ---------------------------------------------------------------------------
-const algorithmFiles = [
+const seededAlgorithmFiles = [
   path.join(root, 'src/lib/rl/actorCritic.ts'),
   path.join(root, 'src/lib/rl/policyGradient.ts'),
   path.join(root, 'src/lib/rl/stochasticApproximation.ts'),
 ];
-for (const file of algorithmFiles) {
+for (const file of seededAlgorithmFiles) {
   if (!fs.existsSync(file)) continue;
-  const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (line.trim().startsWith('//')) continue;
-    if (line.includes('Math.random()')) {
-      report(file, i + 1, 'Unseeded Math.random() found in algorithm code.');
+  const source = parseSource(file);
+  function visit(node: ts.Node) {
+    if (
+      ts.isPropertyAccessExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.Identifier &&
+      (node.expression as ts.Identifier).text === 'Math' &&
+      node.name.text === 'random'
+    ) {
+      reportError(file, lineOf(source.text, node.getStart(source)), 'Unseeded Math.random() call in core algorithm file.');
     }
+    ts.forEachChild(node, visit);
   }
+  visit(source);
 }
 
 // ---------------------------------------------------------------------------
-// 2. Discrete AC algorithms must reference bootstrapOnTruncation.
+// 2. Discrete AC algorithms must reference bootstrapOnTruncation (AST-based).
 // ---------------------------------------------------------------------------
 const actorCriticFile = path.join(root, 'src/lib/rl/actorCritic.ts');
-const actorCriticSrc = fs.readFileSync(actorCriticFile, 'utf8');
-const discreteNames = ['function qac', 'function a2c', 'function offPolicyActorCritic', 'function qBasedOffPolicyActorCritic'];
-for (const name of discreteNames) {
-  const idx = actorCriticSrc.indexOf(name);
-  if (idx < 0) {
-    report(actorCriticFile, 1, `Missing ${name}`);
-    continue;
+const acSource = parseSource(actorCriticFile);
+const discreteNames = ['qac', 'a2c', 'offPolicyActorCritic', 'qBasedOffPolicyActorCritic'];
+function visitFunctions(node: ts.Node) {
+  if (ts.isFunctionDeclaration(node) && node.name && discreteNames.includes(node.name.text)) {
+    const text = acSource.text.substring(node.pos, node.end);
+    if (!text.includes('bootstrapOnTruncation')) {
+      reportError(actorCriticFile, lineOf(acSource.text, node.getStart(acSource)), `${node.name.text} does not handle bootstrapOnTruncation`);
+    }
   }
-  const block = actorCriticSrc.slice(idx, actorCriticSrc.indexOf('\n}', idx) + 2);
-  if (!block.includes('bootstrapOnTruncation')) {
-    report(actorCriticFile, actorCriticSrc.slice(0, idx).split('\n').length, `${name} does not handle bootstrapOnTruncation`);
-  }
+  ts.forEachChild(node, visitFunctions);
 }
+visitFunctions(acSource);
 
 // ---------------------------------------------------------------------------
 // 3. CI must run tests before build and use Node 24.
@@ -84,13 +108,13 @@ for (const name of discreteNames) {
 const deployYml = path.join(root, '.github/workflows/deploy.yml');
 const deploySrc = fs.readFileSync(deployYml, 'utf8');
 if (!deploySrc.includes('node-version: 24')) {
-  report(deployYml, 1, 'CI should use node-version: 24');
+  reportError(deployYml, 1, 'CI should use node-version: 24');
 }
 if (!deploySrc.includes('npm run test:all')) {
-  report(deployYml, 1, 'CI should run npm run test:all before build');
+  reportError(deployYml, 1, 'CI should run npm run test:all before build');
 }
 if (deploySrc.indexOf('npm run test:all') > deploySrc.indexOf('npm run build')) {
-  report(deployYml, 1, 'Tests should run before build');
+  reportError(deployYml, 1, 'Tests should run before build');
 }
 
 // ---------------------------------------------------------------------------
@@ -119,10 +143,63 @@ for (const { name, config } of configs) {
       epsilon: 0.5,
     });
     if (result.episodes.length !== 5) {
-      report(actorCriticFile, 1, `${algo.name} on ${name} produced ${result.episodes.length} episodes, expected 5`);
+      reportError(actorCriticFile, 1, `${algo.name} on ${name} produced ${result.episodes.length} episodes, expected 5`);
     }
     if (result.policyAfterEpisode.length !== result.episodes.length) {
-      report(actorCriticFile, 1, `${algo.name} on ${name}: policyAfterEpisode length ${result.policyAfterEpisode.length} != episodes ${result.episodes.length}`);
+      reportError(actorCriticFile, 1, `${algo.name} on ${name}: policyAfterEpisode length ${result.policyAfterEpisode.length} != episodes ${result.episodes.length}`);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 5. Warn about Math.random anywhere in src/lib/rl (legacy shared utilities).
+// ---------------------------------------------------------------------------
+const rlFiles = walk(path.join(root, 'src/lib/rl'), (p) => p.endsWith('.ts'));
+for (const file of rlFiles) {
+  const source = parseSource(file);
+  function visit(node: ts.Node) {
+    if (
+      ts.isPropertyAccessExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.Identifier &&
+      (node.expression as ts.Identifier).text === 'Math' &&
+      node.name.text === 'random'
+    ) {
+      reportWarning(file, lineOf(source.text, node.getStart(source)), 'Unseeded Math.random() found in shared RL library.');
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+}
+
+// ---------------------------------------------------------------------------
+// 6. Warn about hard-coded horizon/maxSteps defaults of 30.
+// ---------------------------------------------------------------------------
+const pageFiles = walk(path.join(root, 'src/pages'), (p) => p.endsWith('.tsx') || p.endsWith('.ts'));
+for (const file of new Set([...pageFiles, ...rlFiles])) {
+  const text = fs.readFileSync(file, 'utf8');
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.includes('//')) continue;
+    if (/\b(horizonH|horizon|maxSteps)\s*[:=]\s*30\b/.test(line)) {
+      reportWarning(file, i + 1, 'Hard-coded horizon/maxSteps = 30 found');
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 7. Warn about questionable wording / labelling.
+// ---------------------------------------------------------------------------
+for (const file of pageFiles) {
+  const text = fs.readFileSync(file, 'utf8');
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.includes('完整回合')) {
+      reportWarning(file, i + 1, '“完整回合” wording found; verify it is not used in a continuing setting');
+    }
+    if (line.includes('当前策略价值') && line.includes('actionValueToStateValue')) {
+      reportWarning(file, i + 1, 'max/greedy-derived value may be mislabeled as current policy value');
     }
   }
 }
@@ -130,9 +207,16 @@ for (const { name, config } of configs) {
 // ---------------------------------------------------------------------------
 // Report
 // ---------------------------------------------------------------------------
-if (issues.length > 0) {
-  console.error(`❌ Consistency scan failed with ${issues.length} issue(s):`);
-  for (const issue of issues) {
+if (warnings.length > 0) {
+  console.warn(`⚠️ Consistency scan produced ${warnings.length} warning(s) for manual review:`);
+  for (const w of warnings) {
+    console.warn(`  ${w.file}:${w.line} — ${w.message}`);
+  }
+}
+
+if (errors.length > 0) {
+  console.error(`\n❌ Consistency scan failed with ${errors.length} error(s):`);
+  for (const issue of errors) {
     console.error(`  ${issue.file}:${issue.line} — ${issue.message}`);
   }
   process.exit(1);

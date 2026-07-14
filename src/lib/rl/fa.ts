@@ -386,6 +386,7 @@ export interface DQNBatchItem {
 
 export interface DQNResult {
   qHistory: number[][][];
+  qPerStep: number[][][];
   lossHistory: number[];
   finalReplaySize: number;
   lastBatch: DQNBatchItem[];
@@ -421,6 +422,7 @@ export function dqnGridWorld(config: GridWorldConfig, options: DQNOptions): DQNR
   const replay: Transition[] = [];
 
   const qHistory: number[][][] = [];
+  const qPerStep: number[][][] = [];
   const lossHistory: number[] = [];
   const episodeReturnHistory: number[] = [];
   const episodeLengthHistory: number[] = [];
@@ -519,6 +521,12 @@ export function dqnGridWorld(config: GridWorldConfig, options: DQNOptions): DQNR
         lossHistory.push(totalLoss / batch.length);
         trainStepCount++;
 
+        const qTableNow: number[][] = [];
+        for (let s = 0; s < numStates; s++) {
+          qTableNow.push(networkQ(mainNet, s));
+        }
+        qPerStep.push(qTableNow);
+
         if (targetUpdateInterval > 0 && trainStepCount % targetUpdateInterval === 0) {
           targetNet.initFrom(mainNet);
           targetUpdateSteps.push(trainStepCount);
@@ -541,6 +549,7 @@ export function dqnGridWorld(config: GridWorldConfig, options: DQNOptions): DQNR
 
   return {
     qHistory,
+    qPerStep,
     lossHistory,
     finalReplaySize: replay.length,
     lastBatch,

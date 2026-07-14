@@ -1234,16 +1234,19 @@ function DQNDemo() {
   const finalOptimalityResidual = useMemo(() => optimalBellmanResidualQ(finalQ, config), [finalQ, config]);
 
   const lossData = useMemo(() => {
-    return result.lossHistory.map((loss, i) => ({
-      step: i,
-      loss,
-      return: result.episodeReturnHistory[i] ?? 0,
-      length: result.episodeLengthHistory[i] ?? 0,
-      rmse: qTableRMSE(result.qHistory[i], qStar),
-      residual: optimalBellmanResidualQ(result.qHistory[i], config),
-      successRate: successRate(result.qHistory[i], qStar),
-      targetUpdate: result.targetUpdateSteps.includes(i + 1) ? 1 : 0,
-    }));
+    return result.lossHistory.map((loss, i) => {
+      const q = result.qPerStep[i] ?? result.qHistory[result.qHistory.length - 1];
+      return {
+        step: i,
+        loss,
+        return: result.episodeReturnHistory[i] ?? 0,
+        length: result.episodeLengthHistory[i] ?? 0,
+        rmse: qTableRMSE(q, qStar),
+        residual: optimalBellmanResidualQ(q, config),
+        successRate: successRate(q, qStar),
+        targetUpdate: result.targetUpdateSteps.includes(i + 1) ? 1 : 0,
+      };
+    });
   }, [result, qStar, config]);
 
   return (

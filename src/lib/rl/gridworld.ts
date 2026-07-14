@@ -239,9 +239,64 @@ export function isTerminal(state: number, config: GridWorldConfig): boolean {
 }
 
 /**
- * Stochastic transition distribution p(s'|s,a) with slip probability.
+ * Full stochastic outcome for a single step.
+ * Keeps both the intended and the actually executed action so the UI can
+ * illustrate when a slip occurs.  Reward and done come from the actual action.
+ */
+export interface StochasticOutcome {
+  intendedAction: Action;
+  actualAction: Action;
+  nextState: number;
+  reward: number;
+  done: boolean;
+  prob: number;
+}
+
+/**
+ * Stochastic step distribution with full outcomes.
  * With probability (1 - slip) the intended action is executed;
  * with probability slip a uniformly random action (including the intended one) is executed.
+ * Each outcome stores the actual action, next state, reward, and terminal flag.
+ *
+ * Outcomes are NOT merged by nextState, because different actual actions can yield
+ * the same nextState but different rewards (e.g. boundary stay vs. real move).
+ */
+export function stochasticStepDistribution(
+  state: number,
+  intendedAction: Action,
+  config: GridWorldConfig,
+  slip: number
+): StochasticOutcome[] {
+  const numActions = ACTION_DELTAS.length;
+  const intendedResult = step(state, intendedAction, config);
+  const outcomes: StochasticOutcome[] = [
+    {
+      intendedAction,
+      actualAction: intendedAction,
+      nextState: intendedResult.nextState,
+      reward: intendedResult.reward,
+      done: intendedResult.done,
+      prob: 1 - slip,
+    },
+  ];
+  for (let a = 0; a < numActions; a++) {
+    const actualAction = a as Action;
+    const result = step(state, actualAction, config);
+    outcomes.push({
+      intendedAction,
+      actualAction,
+      nextState: result.nextState,
+      reward: result.reward,
+      done: result.done,
+      prob: slip / numActions,
+    });
+  }
+  return outcomes;
+}
+
+/**
+ * Legacy next-state-only distribution (kept for visualisations that only need s').
+ * Note: this merges outcomes with the same nextState, which can hide reward differences.
  */
 export function stochasticTransition(
   state: number,
@@ -249,13 +304,9 @@ export function stochasticTransition(
   config: GridWorldConfig,
   slip: number
 ): { nextState: number; prob: number }[] {
-  const numActions = ACTION_DELTAS.length;
-  const intended = step(state, action, config).nextState;
   const counts = new Map<number, number>();
-  counts.set(intended, 1 - slip);
-  for (let a = 0; a < numActions; a++) {
-    const sNext = step(state, a as Action, config).nextState;
-    counts.set(sNext, (counts.get(sNext) ?? 0) + slip / numActions);
+  for (const outcome of stochasticStepDistribution(state, action, config, slip)) {
+    counts.set(outcome.nextState, (counts.get(outcome.nextState) ?? 0) + outcome.prob);
   }
   return Array.from(counts.entries())
     .map(([nextState, prob]) => ({ nextState, prob }))

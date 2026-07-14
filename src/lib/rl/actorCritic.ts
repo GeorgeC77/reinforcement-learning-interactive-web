@@ -14,7 +14,7 @@ import {
   step,
   sampleActionWithRng,
   isTerminal,
-  stochasticTransition,
+  stochasticStepDistribution,
   solveLinearSystem,
 } from './gridworld';
 
@@ -414,11 +414,11 @@ function policyWeightedStochasticDynamics(
     for (let a = 0; a < policy[s].length; a++) {
       const piA = policy[s][a];
       if (piA === 0) continue;
-      const dist = stochasticTransition(s, a as Action, config, slip);
-      for (const { nextState, prob } of dist) {
-        const { reward } = step(s, a as Action, config);
-        rewardVector[s] += piA * prob * reward;
-        transitionMatrix[s][nextState] += piA * prob;
+      for (const outcome of stochasticStepDistribution(s, a as Action, config, slip)) {
+        rewardVector[s] += piA * outcome.prob * outcome.reward;
+        if (!outcome.done) {
+          transitionMatrix[s][outcome.nextState] += piA * outcome.prob;
+        }
       }
     }
   }
@@ -447,16 +447,15 @@ export function computeQValuesWithSlip(
 ): number[][] {
   const values = solveStateValuesWithSlip(policy, config, slip);
   const n = config.rows * config.cols;
-  const q: number[][] = Array.from({ length: n }, () => new Array(policy[0]?.length ?? 5).fill(0));
+  const numActions = policy[0]?.length ?? 5;
+  const q: number[][] = Array.from({ length: n }, () => new Array(numActions).fill(0));
   for (let s = 0; s < n; s++) {
     if (isTerminal(s, config)) continue;
-    for (let a = 0; a < q[s].length; a++) {
-      const dist = stochasticTransition(s, a as Action, config, slip);
+    for (let a = 0; a < numActions; a++) {
       let exp = 0;
-      for (const { nextState, prob } of dist) {
-        const { reward, done } = step(s, a as Action, config);
-        const bootstrap = done ? 0 : values[nextState];
-        exp += prob * (reward + config.gamma * bootstrap);
+      for (const outcome of stochasticStepDistribution(s, a as Action, config, slip)) {
+        const bootstrap = outcome.done ? 0 : values[outcome.nextState];
+        exp += outcome.prob * (outcome.reward + config.gamma * bootstrap);
       }
       q[s][a] = exp;
     }
