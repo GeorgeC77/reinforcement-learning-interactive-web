@@ -579,7 +579,7 @@ export default function TdDemo({ title, subtitle, algorithms, defaultAlgorithm }
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="continuing">continuing textbook task</SelectItem>
+                      <SelectItem value="continuing">continuing task</SelectItem>
                       <SelectItem value="episodic">episodic path-finding task</SelectItem>
                     </SelectContent>
                   </Select>

@@ -57,8 +57,8 @@ export default function Chapter07OverviewPage() {
           />
           <ConceptCard
             icon={<FlaskConical className="w-5 h-5" />}
-            title="教材补充与拓展"
-            description="Expected Sarsa（教材 Box 7.4）；TD(λ) 与 Sarsa(λ)（教材外）。"
+            title="补充与拓展"
+            description="Expected Sarsa；TD(λ) 与 Sarsa(λ)。"
           />
         </div>
       </section>
@@ -82,7 +82,7 @@ export default function Chapter07OverviewPage() {
           to="/ch07/td-ext"
           className="inline-flex items-center gap-2 px-6 py-3 bg-purple-100 text-purple-700 rounded-lg font-medium hover:bg-purple-200 transition-colors"
         >
-          教材补充与拓展
+          补充与拓展
           <ArrowRight className="w-4 h-4" />
         </Link>
         <Link

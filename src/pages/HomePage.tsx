@@ -33,11 +33,10 @@ export default function HomePage() {
           </div>
         </div>
         <h1 className="text-4xl md:text-5xl font-bold text-gray-900 mb-4">
-          强化学习数学基础
+          强化学习
         </h1>
         <p className="text-lg text-gray-600 max-w-3xl mx-auto mb-6">
-          基于赵世钰《强化学习的数学基础》（Mathematical Foundations of Reinforcement Learning）的交互式学习网站。
-          从 MDP、Bellman 方程到策略梯度与 Actor-Critic，逐章深入理解强化学习的核心思想与算法。
+          一个交互式学习网站，从 MDP、Bellman 方程到策略梯度与 Actor-Critic，逐章深入理解强化学习的核心思想与算法。
         </p>
 
         {/* Copyright banner */}

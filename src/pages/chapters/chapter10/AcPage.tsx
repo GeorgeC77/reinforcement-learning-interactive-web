@@ -67,7 +67,7 @@ function configDescription(config: GridWorldConfig): string {
   if (config.taskType === 'episodic') {
     return `episodic path-finding：起点 s${config.startState + 1}，目标 s${config.targetState + 1}，禁止状态 [${config.forbiddenStates.map((s) => s + 1).join(', ')}]，每步 ${config.stepReward}，撞墙/禁止 ${config.forbiddenReward}，到达目标 ${config.targetReward}`;
   }
-  return `textbook continuing：起点 s${config.startState + 1}，目标 s${config.targetState + 1}（不终止），禁止状态 [${config.forbiddenStates.map((s) => s + 1).join(', ')}]，目标奖励 ${config.targetReward}，禁止奖励 ${config.forbiddenReward}，折扣 γ=${config.gamma}`;
+  return `continuing：起点 s${config.startState + 1}，目标 s${config.targetState + 1}（不终止），禁止状态 [${config.forbiddenStates.map((s) => s + 1).join(', ')}]，目标奖励 ${config.targetReward}，禁止奖励 ${config.forbiddenReward}，折扣 γ=${config.gamma}`;
 }
 
 export default function Chapter10AcPage() {
@@ -439,7 +439,7 @@ function DiscreteControlPanel({
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="episodic">episodic path-finding</SelectItem>
-              <SelectItem value="continuing">textbook continuing</SelectItem>
+              <SelectItem value="continuing">continuing</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -1475,7 +1475,7 @@ function OffPolicyDemo() {
   const [criticAlpha, setCriticAlpha] = useState(0.1);
   const [epsilon, setEpsilon] = useState(0.5);
   const [episodes, setEpisodes] = useState(80);
-  const [variant, setVariant] = useState<'textbook' | 'extended'>('textbook');
+  const [variant, setVariant] = useState<'standard' | 'extended'>('standard');
   const [valueMode, setValueMode] = useState<'target' | 'greedy'>('target');
   const [bootstrapOnTruncation, setBootstrapOnTruncation] = useState(true);
   const [importanceMode, setImportanceMode] = useState<'raw' | 'clipped'>('raw');
@@ -1496,7 +1496,7 @@ function OffPolicyDemo() {
     };
     try {
       const data =
-        variant === 'textbook'
+        variant === 'standard'
           ? offPolicyActorCritic(config, options)
           : qBasedOffPolicyActorCritic(config, options);
       return { ok: true, data };
@@ -1511,7 +1511,7 @@ function OffPolicyDemo() {
 
   const values = useMemo(() => {
     if (!record) return new Array(config.rows * config.cols).fill(0);
-    if (variant === 'textbook' && record.vAfter) return record.vAfter;
+    if (variant === 'standard' && record.vAfter) return record.vAfter;
     if (variant === 'extended' && record.qAfter) {
       return valueMode === 'target'
         ? policyWeightedStateValues(record.qAfter, record.actorFullPolicyAfter!)
@@ -1712,13 +1712,13 @@ function OffPolicyDemo() {
             <CardContent className="space-y-4">
               <div>
                 <label className="text-sm text-gray-700 block mb-1">算法版本</label>
-                <Select value={variant} onValueChange={(v) => setVariant(v as 'textbook' | 'extended')}>
+                <Select value={variant} onValueChange={(v) => setVariant(v as 'standard' | 'extended')}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="textbook">教材版：V-based + ρ</SelectItem>
-                    <SelectItem value="extended">教材拓展：Q-based off-policy Actor-Critic</SelectItem>
+                    <SelectItem value="standard">标准版：V-based + ρ</SelectItem>
+                    <SelectItem value="extended">拓展版：Q-based off-policy Actor-Critic</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

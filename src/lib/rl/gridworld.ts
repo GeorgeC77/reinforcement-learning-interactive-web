@@ -1,14 +1,14 @@
 /**
  * Unified GridWorld environment and RL utilities.
  *
- * Reference: Shiyu Zhao, "Mathematical Foundations of Reinforcement Learning"
+ * Core gridworld environment and dynamic-programming utilities.
  *
  * Default 3x3 layout (row-major indices):
  *   s1(0) s2(1) s3(2)
  *   s4(3) s5(4) s6(5)
  *   s7(6) s8(7) s9(8)
  *
- * Textbook default environment:
+ * Default environment:
  *   - targetState:    s9  (index 8)
  *   - forbiddenStates: s6, s7 (indices [5, 6])
  *   - boundaryReward: -1
@@ -73,7 +73,7 @@ export const DEFAULT_CONFIG: GridWorldConfig = {
   cols: 3,
   startState: 0,
   targetState: 8,
-  forbiddenStates: [5, 6], // s6 and s7 as in the textbook
+  forbiddenStates: [5, 6], // s6 and s7
   targetReward: 1,
   forbiddenReward: -1,
   boundaryReward: -1,
@@ -1838,7 +1838,7 @@ export function tdLambdaPrediction(
  */
 /**
  * MC Basic: for each (s,a), run numEpisodes episodes and average returns.
- * This is the textbook model-free conversion of policy iteration.
+ * This is a model-free conversion of policy iteration.
  */
 export function mcBasic(
   config: GridWorldConfig,
@@ -1875,7 +1875,7 @@ export function mcBasic(
 }
 
 /**
- * MC Basic policy iteration (Algorithm 5.1) — the COMPLETE textbook algorithm.
+ * MC Basic policy iteration — the complete algorithm.
  *
  * for k = 0, 1, 2, ...:
  *   1. For each (s,a), sample episodes starting from (s,a), then follow π_k;

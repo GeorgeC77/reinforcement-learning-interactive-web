@@ -349,7 +349,7 @@ export default function Chapter01RewardPage() {
         <FormulaCard
           title="奖励函数"
           formula={<KaTeX math={String.raw`r(s,a) = \mathbb{E}[R_{t+1} \mid S_t=s, A_t=a]`} display />}
-          description="在本书网格世界中，r(s,a) 由执行动作后到达的下一状态决定。"
+          description="在本课程网格世界中，r(s,a) 由执行动作后到达的下一状态决定。"
         />
         <FormulaCard
           title="奖励的仿射不变性"

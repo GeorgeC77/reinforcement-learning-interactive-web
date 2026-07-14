@@ -79,7 +79,7 @@ for (const route of routes) {
   test(`route ${route} renders without runtime errors`, async ({ page }) => {
     const errors = await collectErrors(page);
     await page.goto(route);
-    await page.waitForLoadState('networkidle');
+    await page.waitForLoadState('domcontentloaded');
 
     // Page should not be blank.
     const bodyText = await page.locator('body').innerText();

@@ -36,7 +36,7 @@ for (const route of routes) {
     });
 
     await page.goto(route);
-    await page.waitForLoadState('networkidle');
+    await page.waitForLoadState('domcontentloaded');
 
     // The page should always render meaningful content.
     await expect(page.locator('main')).toBeVisible();

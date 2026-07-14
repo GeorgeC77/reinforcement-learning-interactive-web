@@ -857,7 +857,7 @@ function DiscountedPGDemo() {
         <PGFlowDiagram />
 
         <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-base">折扣策略梯度数值检查器（Theorem 9.2）</CardTitle></CardHeader>
+          <CardHeader className="pb-2"><CardTitle className="text-base">折扣策略梯度数值检查器</CardTitle></CardHeader>
           <CardContent className="space-y-4 text-sm text-gray-700">
             <div className="grid md:grid-cols-4 gap-4">
               <div>
@@ -904,7 +904,7 @@ function DiscountedPGDemo() {
                 <div className="font-mono font-semibold">{check.finiteDifference.toExponential(4)}</div>
               </div>
               <div className="bg-gray-50 rounded p-3 border border-gray-200">
-                <div className="text-gray-500 text-xs">Theorem 9.2 exact</div>
+                <div className="text-gray-500 text-xs">exact</div>
                 <div className="font-mono font-semibold">{check.exact.toExponential(4)}</div>
               </div>
               <div className="bg-gray-50 rounded p-3 border border-gray-200">
@@ -1191,7 +1191,7 @@ function ReinforceDemo() {
   );
 
   return (
-    <InteractiveDemo title="9.4 REINFORCE（教材 Algorithm 9.1）">
+    <InteractiveDemo title="9.4 REINFORCE">
       <div className="space-y-6">
         <BanditWarmup />
 
@@ -1594,8 +1594,8 @@ function BaselineBridgeDemo() {
         <Card>
           <CardHeader className="pb-2"><CardTitle className="text-base">从第 9 章到第 10 章</CardTitle></CardHeader>
           <CardContent className="text-sm text-gray-700 space-y-2">
-            <p>REINFORCE 是教材第 9 章的主体算法。</p>
-            <p>Baseline 与 Advantage 的严格方差分析、价值函数近似 critic 等内容在第 10 章正式展开。</p>
+            <p>REINFORCE 是本章的主体算法。</p>
+            <p>Baseline 与 Advantage 的严格方差分析、价值函数近似 critic 等内容在下一章正式展开。</p>
             <p>当前页面仅说明：任何不依赖当前动作的基线都不改变期望梯度，并可能降低方差。</p>
           </CardContent>
         </Card>

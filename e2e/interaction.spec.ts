@@ -45,7 +45,7 @@ test.describe('chapter 08 FA high-risk interactions', () => {
   test('semi-gradient TD charts update when feature and weight mode change', async ({ page }) => {
     const errors = collectErrors(page);
     await page.goto('/#/ch08/fa');
-    await page.waitForLoadState('networkidle');
+    await page.waitForLoadState('domcontentloaded');
 
     await page.getByRole('tab', { name: /半梯度 TD/ }).click();
     await expect(page.getByRole('tab', { name: /半梯度 TD/ })).toHaveAttribute('aria-selected', 'true');
@@ -69,7 +69,7 @@ test.describe('chapter 08 FA high-risk interactions', () => {
   test('LSTD panel shows success status and numeric diagnostics', async ({ page }) => {
     const errors = collectErrors(page);
     await page.goto('/#/ch08/fa');
-    await page.waitForLoadState('networkidle');
+    await page.waitForLoadState('domcontentloaded');
 
     await page.getByRole('tab', { name: '理论' }).click();
     await page.getByRole('tab', { name: 'LSTD' }).click();
@@ -91,7 +91,7 @@ test.describe('chapter 08 FA high-risk interactions', () => {
   test('DQN update-level and episode-level charts split metrics', async ({ page }) => {
     const errors = collectErrors(page);
     await page.goto('/#/ch08/fa');
-    await page.waitForLoadState('networkidle');
+    await page.waitForLoadState('domcontentloaded');
 
     await page.getByRole('tab', { name: /Deep Q-learning/ }).click();
     await expect(page.getByRole('tab', { name: /Deep Q-learning/ })).toHaveAttribute('aria-selected', 'true');
@@ -115,7 +115,7 @@ test.describe('chapter 09 PG high-risk interactions', () => {
   test('softmax shift invariance preserves probabilities', async ({ page }) => {
     const errors = collectErrors(page);
     await page.goto('/#/ch09/pg');
-    await page.waitForLoadState('networkidle');
+    await page.waitForLoadState('domcontentloaded');
 
     await page.getByRole('tab', { name: /策略函数/ }).click();
     await expect(page.getByRole('tab', { name: /策略函数/ })).toHaveAttribute('aria-selected', 'true');
@@ -133,7 +133,7 @@ test.describe('chapter 09 PG high-risk interactions', () => {
   test('changing Δθ updates affected-state logits', async ({ page }) => {
     const errors = collectErrors(page);
     await page.goto('/#/ch09/pg');
-    await page.waitForLoadState('networkidle');
+    await page.waitForLoadState('domcontentloaded');
 
     await page.getByRole('tab', { name: /策略函数/ }).click();
 

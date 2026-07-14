@@ -26,7 +26,7 @@ export const courseManifest: Part[] = [
   {
     id: "part-rl",
     number: 1,
-    title: "强化学习数学基础",
+    title: "强化学习",
     chapters: [
       {
         id: "ch01",

@@ -833,7 +833,7 @@ export function a2c(config: GridWorldConfig, options: ACOptions): ACResult {
 }
 
 // ---------------------------------------------------------------------------
-// Off-policy Actor-Critic (V-based, textbook Algorithm 10.3 style)
+// Off-policy Actor-Critic (V-based)
 // ---------------------------------------------------------------------------
 
 export function offPolicyActorCritic(config: GridWorldConfig, options: ACOptions): ACResult {

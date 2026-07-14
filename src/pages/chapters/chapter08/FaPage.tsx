@@ -265,7 +265,7 @@ export default function Chapter08FaPage() {
                   <li>函数近似用有限参数逼近大状态空间中的值函数。</li>
                   <li>线性近似中，one-hot 特征等价于表格法；坐标/多项式/距离特征可实现泛化。</li>
                   <li>半梯度 TD(0) 使用自举目标，更新不是真正的随机梯度下降，但在 mild 条件下收敛。</li>
-                  <li>资格迹 λ&gt;0 是 TD(0) 的拓展，λ=0 退化为教材主体。</li>
+                  <li>资格迹 λ&gt;0 是 TD(0) 的拓展，λ=0 退化为标准 TD(0)。</li>
                   <li>动作值函数近似包括 Sarsa with FA 与 Q-learning with FA，指标应区分策略。</li>
                   <li>DQN 用神经网络做非线性近似，并通过经验回放和目标网络稳定训练。</li>
                 </ul>
@@ -903,7 +903,7 @@ function TheorySection() {
           <FormulaCard
             title="Value-error objective"
             formula={<KaTeX math={String.raw`J(w) = \sum_s d(s)\bigl[v_\pi(s) - \hat{v}(s,w)\bigr]^2`} display />}
-            description="用状态分布 d(s) 加权均方误差。教材中常取 stationary distribution，demo 中也可切换 uniform 或 empirical visitation。"
+            description="用状态分布 d(s) 加权均方误差。demo 中可切换 uniform、empirical visitation 或 stationary distribution。"
           />
           <p className="text-sm text-gray-700">
             最小化 J(w) 相当于在函数子空间里把真实值函数 v_π 投影到以 d(s) 为内积权重的近似函数上。

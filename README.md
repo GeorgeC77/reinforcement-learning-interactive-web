@@ -1,6 +1,6 @@
 # 强化学习数学基础 · 交互式课程
 
-基于赵世钰（Shiyu Zhao）《Mathematical Foundations of Reinforcement Learning》（《强化学习的数学基础》）的交互式教学网站。
+一个关于强化学习核心概念与算法的交互式教学网站。
 
 ## 课程结构
 

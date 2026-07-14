@@ -13,9 +13,9 @@ export default function Chapter07TdExtensionsPage() {
             <FlaskConical className="w-8 h-8 text-purple-600" />
           </div>
         </div>
-        <h1 className="text-3xl md:text-4xl font-bold text-gray-900 mb-3">教材补充与拓展</h1>
+        <h1 className="text-3xl md:text-4xl font-bold text-gray-900 mb-3">补充与拓展</h1>
         <p className="text-gray-600 max-w-2xl mx-auto">
-          Expected Sarsa 是教材 Box 7.4 的灰框补充；TD(λ) 与 Sarsa(λ) 是教材之外的延伸内容。
+          Expected Sarsa、TD(λ) 与 Sarsa(λ) 的延伸内容。
         </p>
         <p className="mt-4 text-sm text-amber-700 flex items-center justify-center gap-2">
           <ShieldAlert className="w-4 h-4" />
@@ -25,7 +25,7 @@ export default function Chapter07TdExtensionsPage() {
 
       <section className="space-y-4">
         <FormulaCard
-          title="Expected Sarsa（教材 Box 7.4 补充）"
+          title="Expected Sarsa"
           formula={
             <KaTeX
               math={String.raw`q(s_t,a_t) \leftarrow q(s_t,a_t) + \alpha \bigl[ r_{t+1} + \gamma \sum_a \pi(a|s_{t+1}) q(s_{t+1},a) - q(s_t,a_t) \bigr]`}
@@ -35,7 +35,7 @@ export default function Chapter07TdExtensionsPage() {
           description="TD 目标使用下一状态的动作期望，通常比 Sarsa 更稳定。"
         />
         <FormulaCard
-          title="TD(λ) 预测（教材拓展）"
+          title="TD(λ) 预测"
           formula={
             <KaTeX
               math={String.raw`\delta_t = r_{t+1} + \gamma v(s_{t+1}) - v(s_t), \quad E_t(s) = \gamma \lambda E_{t-1}(s) + \mathbf{1}_{s=s_t}`}
@@ -45,7 +45,7 @@ export default function Chapter07TdExtensionsPage() {
           description="为每个状态维护资格迹，把当前 TD 误差按迹分配给近期访问过的状态。"
         />
         <FormulaCard
-          title="Sarsa(λ) 控制（教材拓展）"
+          title="Sarsa(λ) 控制"
           formula={
             <KaTeX
               math={String.raw`E_t(s,a) = \gamma \lambda E_{t-1}(s,a) + \mathbf{1}_{s=s_t,a=a_t}, \quad q \leftarrow q + \alpha \delta_t E_t`}
@@ -57,7 +57,7 @@ export default function Chapter07TdExtensionsPage() {
       </section>
 
       <TdDemo
-        title="教材补充与拓展"
+        title="补充与拓展"
         subtitle="Expected Sarsa、TD(λ) 与 Sarsa(λ) 的动态教学演示。"
         algorithms={[
           { key: 'expected', label: 'Expected Sarsa', category: 'supplement' },

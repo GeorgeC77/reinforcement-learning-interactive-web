@@ -346,7 +346,7 @@ function RobbinsMonroDemo() {
                 warnText={
                   <span>
                     当前 g(w)=tanh(w-w*) 满足 g(w*)=0 且单调，但其导数 g&apos;(x)=sech²(x) 在全局没有统一正下界，
-                    不能直接套用教材中要求 0&lt;c1≤g&apos;≤c2 的全局 RM 定理。该示例主要用于直观演示，实际收敛还与初值和局部性质有关。
+                    不能直接套用要求 0&lt;c1≤g&apos;≤c2 的全局 RM 定理。该示例主要用于直观演示，实际收敛还与初值和局部性质有关。
                   </span>
                 }
               />
@@ -859,7 +859,7 @@ function TDBridgeDemo() {
                 <Select value={taskType} onValueChange={(v) => handleTaskTypeChange(v as TaskType)}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="continuing">Continuing（教材默认）</SelectItem>
+                    <SelectItem value="continuing">Continuing（默认）</SelectItem>
                     <SelectItem value="episodic">Episodic（寻路）</SelectItem>
                   </SelectContent>
                 </Select>
@@ -937,10 +937,10 @@ function DvoretzkyDemo() {
       <div className="grid lg:grid-cols-[1fr_360px] gap-6">
         <div className="flex flex-col gap-4">
           <div className="bg-gray-50 rounded-xl p-6 border border-gray-200 text-sm text-gray-700 space-y-3">
-            <p className="font-semibold">Theorem 6.2（Dvoretzky&apos;s convergence theorem）</p>
+            <p className="font-semibold">Dvoretzky&apos;s convergence theorem</p>
             <p className="text-xs text-gray-500">
               下方互动使用确定性序列 α_k=1/k^p_α、β_k=1/k^p_β 作为定理的示例；
-              教材原定理还允许 α_k、β_k 是依赖历史 filtration H_k 的随机序列。
+              原定理还允许 α_k、β_k 是依赖历史 filtration H_k 的随机序列。
             </p>
             <p>考虑随机过程</p>
             <KaTeX math={String.raw`\Delta_{k+1} = (1-\alpha_k)\Delta_k + \beta_k \eta_k, \quad k=1,2,\dots`} display />
@@ -1055,7 +1055,7 @@ function DvoretzkyDemo() {
               <p>
                 利用 Σα=∞ 保证足够更新，Σα²&lt;∞ 与 Σβ²&lt;∞ 控制噪声积累，
                 结合 martingale 收敛定理可推出 {String.raw`\Delta_k \xrightarrow{a.s.} 0`}。
-                详细证明参见教材 Theorem 6.2。
+                详细证明参见 Dvoretzky 收敛定理的标准证明。
               </p>
             </div>
           )}

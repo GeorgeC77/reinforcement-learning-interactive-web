@@ -682,7 +682,7 @@ export function computePolicyMetrics(
 }
 
 // ---------------------------------------------------------------------------
-// Exact discounted policy-gradient checker (Theorem 9.2)
+// Exact discounted policy-gradient checker
 // ---------------------------------------------------------------------------
 
 export function computeTransitionMatrix(

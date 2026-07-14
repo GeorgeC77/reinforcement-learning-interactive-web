@@ -316,7 +316,7 @@ export default function Chapter01ReturnsPage() {
               <strong> {ACTION_NAMES[quizAction]}</strong>。
             </p>
             <p className="text-gray-700">
-              请问：在本书的确定性网格世界中，仅知道 <strong>(s{quizState + 1}, {ACTION_NAMES[quizAction]})</strong> 与知道完整历史，预测的下一状态是否相同？
+              请问：在本课程的确定性网格世界中，仅知道 <strong>(s{quizState + 1}, {ACTION_NAMES[quizAction]})</strong> 与知道完整历史，预测的下一状态是否相同？
             </p>
             <div className="flex flex-wrap gap-2">
               {Array.from({ length: 9 }, (_, i) => (

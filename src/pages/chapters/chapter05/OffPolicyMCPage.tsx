@@ -90,7 +90,7 @@ export default function Chapter05OffPolicyMCPage() {
           </div>
         </div>
         <h1 className="text-3xl md:text-4xl font-bold text-gray-900 mb-3">
-          教材拓展：异策略蒙特卡洛与重要性采样
+          拓展：异策略蒙特卡洛与重要性采样
         </h1>
         <p className="text-gray-600 max-w-2xl mx-auto">
           用行为策略 b 采样数据，通过重要性采样估计目标策略 π 的动作值。这是模型-free 策略评估的强大工具。

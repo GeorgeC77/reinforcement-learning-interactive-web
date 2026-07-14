@@ -84,7 +84,7 @@ export function runPGTests() {
     'expected feature score matrix is zero'
   );
 
-  // 6. discounted returns (Algorithm 9.1)
+  // 6. discounted returns
   const rewards = [1, 2, 3];
   const returns = computeDiscountedReturns(rewards, 0.9);
   assert(near(returns[0], 1 + 0.9 * (2 + 0.9 * 3), 1e-9), 'G_0 computed correctly');
@@ -211,7 +211,7 @@ export function runPGTests() {
   assert(metrics.stationaryResidual < 1e-9, 'stationary residual small');
   assert(metrics.policy.every((dist) => near(sum(dist), 1, 1e-9)), 'each policy state distribution sums to 1');
 
-  // 15. finite-difference gradient matches Theorem 9.2 exact gradient
+  // 15. finite-difference gradient matches exact gradient
   const gradCheck = checkDiscountGradientComponent(theta, DEFAULT_CONFIG, d0, DEFAULT_CONFIG.gamma, 1, 3);
   assert(near(gradCheck.exactError, 0, 1e-5), 'exact gradient matches finite difference');
   assert(near(gradCheck.rhoSum, gradCheck.expectedRhoSum, 1e-6), 'rho sum equals 1/(1-gamma)');

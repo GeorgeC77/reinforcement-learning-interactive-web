@@ -175,7 +175,7 @@ export default function Chapter07TdPage() {
         defaultAlgorithm="td0"
       />
 
-      <InteractiveDemo title="教材 7.5 统一视角">
+      <InteractiveDemo title="TD 统一视角">
         <div className="overflow-x-auto">
           <table className="w-full text-sm border-collapse">
             <thead>
@@ -288,7 +288,7 @@ export default function Chapter07TdPage() {
                   <li>TD(0) 每步更新，是在线学习的典型代表。</li>
                   <li>Sarsa 同策略、Q-learning 异策略，更新机制不同。</li>
                   <li>n-step 方法在 TD 和 MC 之间做 bias-variance 权衡。</li>
-                  <li>Expected Sarsa 与 TD(λ)、Sarsa(λ) 见“教材补充与拓展”页面。</li>
+                  <li>Expected Sarsa 与 TD(λ)、Sarsa(λ) 见“补充与拓展”页面。</li>
                 </ul>
               ),
             },
