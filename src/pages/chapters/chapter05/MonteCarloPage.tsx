@@ -291,7 +291,7 @@ function MCDemoShell(props: MCDemoShellProps) {
               {schedule==='glie'&&<p className="text-xs text-gray-500 mt-1">ε_k = ε₀ / √(k+1)，ε_k → 0，严格 GLIE。</p>}
             </div>)}
           </CardContent></Card>)}
-        {onHorizonTChange!==undefined&&horizonT!==undefined&&(<Card><CardHeader className="pb-2"><CardTitle className="text-base">轨迹长度 T</CardTitle></CardHeader><CardContent><Select value={String(horizonT)} onValueChange={v=>onHorizonTChange(Number(v))}><SelectTrigger><SelectValue/></SelectTrigger><SelectContent>{HORIZON_OPTIONS.map(t=><SelectItem key={t} value={String(t)}>T={t}</SelectItem>)}</SelectContent></Select></CardContent></Card>)}
+        {onHorizonTChange!==undefined&&horizonT!==undefined&&(<Card><CardHeader className="pb-2"><CardTitle className="text-base">轨迹长度 T</CardTitle></CardHeader><CardContent><Select value={String(horizonT)} onValueChange={v=>onHorizonTChange(Number(v))}><SelectTrigger data-testid="mc-horizon-select"><SelectValue/></SelectTrigger><SelectContent>{HORIZON_OPTIONS.map(t=><SelectItem key={t} value={String(t)}>T={t}</SelectItem>)}</SelectContent></Select></CardContent></Card>)}
         <Card><CardHeader className="pb-2"><CardTitle className="text-base">采样控制</CardTitle></CardHeader>
           <CardContent className="space-y-2">
             <Button size="sm" onClick={()=>onRun(10)} className="w-full">运行 10 个回合</Button>

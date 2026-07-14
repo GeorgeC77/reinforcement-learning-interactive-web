@@ -38,6 +38,7 @@ import {
   policyWeightedStateValues,
   isTerminal,
   optimalBellmanResidualQ,
+  greedyActionAgreement,
   step,
   type GridWorldConfig,
   type Policy,
@@ -124,25 +125,7 @@ function unvisitedRmse(a: number[], b: number[], visits: number[]) {
   return Math.sqrt(idx.reduce((sum, i) => sum + (a[i] - b[i]) ** 2, 0) / idx.length);
 }
 
-function successRate(q: number[][], qStar: number[][]): number {
-  let total = 0;
-  let correct = 0;
-  for (let s = 0; s < q.length; s++) {
-    const maxQ = Math.max(...q[s]);
-    const maxStar = Math.max(...qStar[s]);
-    const greedyActions = q[s]
-      .map((v, a) => ({ v, a }))
-      .filter(({ v }) => Math.abs(v - maxQ) < 1e-6)
-      .map(({ a }) => a);
-    const optimalActions = qStar[s]
-      .map((v, a) => ({ v, a }))
-      .filter(({ v }) => Math.abs(v - maxStar) < 1e-6)
-      .map(({ a }) => a);
-    total++;
-    if (greedyActions.some((a) => optimalActions.includes(a))) correct++;
-  }
-  return total === 0 ? 0 : correct / total;
-}
+
 
 function computeUpdateEffect(
   selectedState: number,
@@ -437,7 +420,7 @@ function SemiGradientDemo() {
   const [alpha, setAlpha] = useState(0.05);
   const [lambda, setLambda] = useState(0);
   const [episodes, setEpisodes] = useState(200);
-  const [maxSteps, setMaxSteps] = useState(30);
+  const [maxSteps, setMaxSteps] = useState(30); // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
   const [seed, setSeed] = useState(1);
   const [weightMode, setWeightMode] = useState<WeightMode>('uniform');
 
@@ -467,18 +450,35 @@ function SemiGradientDemo() {
     return stationaryDist;
   }, [weightMode, result.visitCounts, stationaryDist, config]);
 
-  const chartData = useMemo(() => {
+  function weightsAtEpisode(i: number): number[] {
+    const numStates = config.rows * config.cols;
+    if (weightMode === 'uniform') return new Array(numStates).fill(1 / numStates);
+    if (weightMode === 'empirical') {
+      const counts = result.visitCountsHistory[i] ?? result.visitCounts;
+      const total = counts.reduce((s, v) => s + v, 0);
+      return total === 0 ? new Array(numStates).fill(1 / numStates) : counts.map((v) => v / total);
+    }
+    return stationaryDist;
+  }
+
+  const valueErrorData = useMemo(() => {
+    return result.valuesHistory.map((v, i) => ({
+      episode: i,
+      rmse: rmse(v, result.trueValues),
+      weightedRmse: weightedRmse(v, result.trueValues, weightsAtEpisode(i)),
+    }));
+  }, [result, weightMode, stationaryDist, config]);
+
+  const fixedPointData = useMemo(() => {
+    return result.residualHistory.map((res, i) => ({ episode: i, residual: res }));
+  }, [result]);
+
+  const objectiveData = useMemo(() => {
     return result.valuesHistory.map((v, i) => {
-      const { j } = weightedObjective(v, result.trueValues, weightsForMode);
-      return {
-        episode: i,
-        rmse: rmse(v, result.trueValues),
-        weightedRmse: weightedRmse(v, result.trueValues, result.visitCounts),
-        residual: result.residualHistory[i],
-        objective: j,
-      };
+      const { j } = weightedObjective(v, result.trueValues, weightsAtEpisode(i));
+      return { episode: i, objective: j };
     });
-  }, [result, weightsForMode]);
+  }, [result, weightMode, stationaryDist, config]);
 
   const finalValues = result.valuesHistory[result.valuesHistory.length - 1];
   const finalObj = weightedObjective(finalValues, result.trueValues, weightsForMode);
@@ -544,7 +544,7 @@ function SemiGradientDemo() {
                 </div>
                 <div className="bg-gray-50 rounded p-2 text-center">
                   <div className="text-gray-500">访问加权 RMSE</div>
-                  <div className="font-mono font-semibold">{weightedRmse(finalValues, result.trueValues, result.visitCounts).toFixed(4)}</div>
+                  <div className="font-mono font-semibold">{weightedRmse(finalValues, result.trueValues, weightsForMode).toFixed(4)}</div>
                 </div>
               </div>
               <p className="text-xs text-gray-600">
@@ -553,20 +553,46 @@ function SemiGradientDemo() {
             </CardContent>
           </Card>
 
-          <div className="bg-gray-50 rounded-xl p-6 border border-gray-200">
-            <LineChart
-              data={chartData}
-              xKey="episode"
-              xLabel="回合"
-              yLabel="指标"
-              series={[
-                { key: 'rmse', name: '全状态 RMSE', color: '#2563eb' },
-                { key: 'weightedRmse', name: '访问加权 RMSE', color: '#22c55e' },
-                { key: 'residual', name: 'policy Bellman residual', color: '#ef4444' },
-                { key: 'objective', name: `J(w) (${weightMode})`, color: '#f59e0b' },
-              ]}
-              height={220}
-            />
+          <div className="bg-gray-50 rounded-xl p-6 border border-gray-200 space-y-6">
+            <div data-testid="fa-value-error-chart">
+              <h4 className="text-sm font-semibold text-gray-700 mb-2">Value approximation error</h4>
+              <LineChart
+                data={valueErrorData}
+                xKey="episode"
+                xLabel="回合"
+                yLabel="RMSE"
+                series={[
+                  { key: 'rmse', name: 'full-state RMSE', color: '#2563eb' },
+                  { key: 'weightedRmse', name: `${weightMode} weighted RMSE`, color: '#22c55e' },
+                ]}
+                height={180}
+              />
+            </div>
+            <div data-testid="fa-fixed-point-chart">
+              <h4 className="text-sm font-semibold text-gray-700 mb-2">Fixed-point error</h4>
+              <LineChart
+                data={fixedPointData}
+                xKey="episode"
+                xLabel="回合"
+                yLabel="‖TπV - V‖∞"
+                series={[{ key: 'residual', name: 'policy Bellman residual', color: '#ef4444' }]}
+                height={160}
+              />
+            </div>
+            <div data-testid="fa-objective-chart">
+              <h4 className="text-sm font-semibold text-gray-700 mb-2">Objective</h4>
+              <LineChart
+                data={objectiveData}
+                xKey="episode"
+                xLabel="回合"
+                yLabel={`J(w) (${weightMode})`}
+                series={[{ key: 'objective', name: `J(w) (${weightMode})`, color: '#f59e0b' }]}
+                height={160}
+              />
+            </div>
+            <p className="text-xs text-gray-600">
+              历史曲线按当前选定的分布（{weightMode}）逐回合评价；其中 empirical 使用对应时刻的累积访问次数。
+            </p>
           </div>
 
           <div className="bg-white rounded-xl border border-gray-200 p-4">
@@ -608,7 +634,7 @@ function SemiGradientDemo() {
               )}
 
               <Select value={featureMode} onValueChange={(v) => setFeatureMode(v as FeatureMode)}>
-                <SelectTrigger>
+                <SelectTrigger data-testid="fa-feature-select">
                   <SelectValue placeholder="选择特征" />
                 </SelectTrigger>
                 <SelectContent>
@@ -635,8 +661,8 @@ function SemiGradientDemo() {
               <CardTitle className="text-base">结果</CardTitle>
             </CardHeader>
             <CardContent className="text-sm text-gray-700 space-y-2">
-              <div>最终全状态 RMSE：<span className="font-mono font-semibold">{chartData[chartData.length - 1]?.rmse.toFixed(4)}</span></div>
-              <div>最终访问加权 RMSE：<span className="font-mono font-semibold">{chartData[chartData.length - 1]?.weightedRmse.toFixed(4)}</span></div>
+              <div>最终全状态 RMSE：<span className="font-mono font-semibold">{valueErrorData[valueErrorData.length - 1]?.rmse.toFixed(4)}</span></div>
+              <div>最终访问加权 RMSE：<span className="font-mono font-semibold">{valueErrorData[valueErrorData.length - 1]?.weightedRmse.toFixed(4)}</span></div>
               <div>权重维度：<span className="font-mono">{result.weightsHistory[0].length}</span></div>
               <div className="font-mono text-xs break-all">
                 w ≈ [{result.weightsHistory[result.weightsHistory.length - 1].map((w) => w.toFixed(2)).join(', ')}]
@@ -655,7 +681,7 @@ function FeatureDesignDemo() {
   const [alpha, setAlpha] = useState(0.05);
   const [lambda, setLambda] = useState(0);
   const [episodes, setEpisodes] = useState(100);
-  const [maxSteps, setMaxSteps] = useState(30);
+  const [maxSteps, setMaxSteps] = useState(30); // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
   const [seed, setSeed] = useState(1);
   const [selectedState, setSelectedState] = useState<number | null>(null);
 
@@ -857,7 +883,7 @@ function TheorySection() {
     [policy, config, featureMode, degree, lstdSeed]
   );
   const tdResult = useMemo(
-    () => semiGradientTD(policy, config, { alpha: 0.05, lambda: 0, featureMode, polynomialDegree: degree, episodes: 200, maxSteps: 30, seed: lstdSeed }),
+    () => semiGradientTD(policy, config, { alpha: 0.05, lambda: 0, featureMode, polynomialDegree: degree, episodes: 200, maxSteps: 30, seed: lstdSeed }), // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
     [policy, config, featureMode, degree, lstdSeed]
   );
 
@@ -960,7 +986,7 @@ function TheorySection() {
                 </SelectContent>
               </Select>
               <Select value={featureMode} onValueChange={(v) => setFeatureMode(v as FeatureMode)}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectTrigger data-testid="lstd-feature-select"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="onehot">one-hot</SelectItem>
                   <SelectItem value="coordinate">coordinate</SelectItem>
@@ -974,10 +1000,42 @@ function TheorySection() {
               <SeedControl seed={lstdSeed} onChange={setLstdSeed} />
             </CardContent>
           </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">LSTD 求解状态</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2 text-sm">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="bg-gray-50 rounded p-2 text-center">
+                  <div className="text-gray-500">状态</div>
+                  <div data-testid="lstd-status" className={`font-mono font-semibold ${lstdResult.ok ? 'text-green-600' : 'text-red-600'}`}>{lstdResult.ok ? '成功' : '失败'}</div>
+                </div>
+                <div className="bg-gray-50 rounded p-2 text-center">
+                  <div className="text-gray-500">ridge λ</div>
+                  <div data-testid="lstd-ridge" className="font-mono font-semibold">{lstdResult.ok ? lstdResult.ridgeLambda : '—'}</div>
+                </div>
+                <div className="bg-gray-50 rounded p-2 text-center">
+                  <div className="text-gray-500">minimum pivot</div>
+                  <div data-testid="lstd-min-pivot" className="font-mono font-semibold">{lstdResult.minPivot.toExponential(2)}</div>
+                </div>
+                <div className="bg-gray-50 rounded p-2 text-center">
+                  <div className="text-gray-500">condition estimate</div>
+                  <div data-testid="lstd-cond" className="font-mono font-semibold">{Number.isFinite(lstdResult.conditionEstimate) ? lstdResult.conditionEstimate.toExponential(2) : '∞'}</div>
+                </div>
+              </div>
+              {!lstdResult.ok && (
+                <div className="text-red-600 bg-red-50 p-2 rounded border border-red-200">
+                  求解失败：{lstdResult.reason === 'singular' ? '矩阵奇异' : lstdResult.reason === 'near-singular' ? '矩阵接近奇异（ridge 后仍无法求逆）' : '覆盖不足（A 矩阵对角线几乎为零）'}。
+                </div>
+              )}
+            </CardContent>
+          </Card>
           <div className="grid md:grid-cols-2 gap-4 text-sm">
             <div className="bg-gray-50 rounded p-3 border border-gray-200">
               <div className="font-semibold mb-1">LSTD w</div>
-              <div className="font-mono break-all">[{lstdResult.w.map((x) => x.toFixed(3)).join(', ')}]</div>
+              <div className="font-mono break-all">
+                [{lstdResult.ok ? lstdResult.w.map((x) => x.toFixed(3)).join(', ') : '—'}]
+              </div>
             </div>
             <div className="bg-gray-50 rounded p-3 border border-gray-200">
               <div className="font-semibold mb-1">半梯度 TD(0) 最终 w</div>
@@ -985,7 +1043,7 @@ function TheorySection() {
             </div>
           </div>
           <p className="text-sm text-gray-700">
-            LSTD 用数据累积 A 与 b，最后求逆；TD 每步只更新参数向量 w。两者在线性函数、无限数据极限下收敛到同一不动点。
+            在 on-policy、充分覆盖、相关矩阵非奇异且 TD 步长满足相应条件时，LSTD 与线性 TD 可指向同一个投影 Bellman 固定点。
           </p>
         </TabsContent>
 
@@ -1018,7 +1076,7 @@ function ActionValueFADemo() {
   const [epsilonMode, setEpsilonMode] = useState<EpsilonScheduleMode>('fixed');
   const [epsilonMin, setEpsilonMin] = useState(0.01);
   const [episodes, setEpisodes] = useState(200);
-  const [maxSteps, setMaxSteps] = useState(30);
+  const [maxSteps, setMaxSteps] = useState(30); // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
   const [taskType, setTaskType] = useState<TaskType>('episodic');
   const [seed, setSeed] = useState(1);
 
@@ -1046,7 +1104,7 @@ function ActionValueFADemo() {
   const behaviorValues = useMemo(() => policyWeightedStateValues(finalQ, finalBehaviorPolicy), [finalQ, finalBehaviorPolicy]);
   const greedyValues = useMemo(() => actionValueToStateValue(finalQ), [finalQ]);
   const finalRMSE = useMemo(() => qTableRMSE(finalQ, qStar), [finalQ, qStar]);
-  const finalSuccessRate = useMemo(() => successRate(finalQ, qStar), [finalQ, qStar]);
+  const finalGreedyAgreement = useMemo(() => greedyActionAgreement(finalQ, qStar, config), [finalQ, qStar, config]);
 
   const chartData = useMemo(() => {
     return result.residualHistory.map((res, i) => ({
@@ -1055,9 +1113,9 @@ function ActionValueFADemo() {
       rmse: qTableRMSE(result.qHistory[i], qStar),
       return: result.episodeReturnHistory[i],
       length: result.episodeLengthHistory[i],
-      successRate: successRate(result.qHistory[i], qStar),
+      greedyAgreement: greedyActionAgreement(result.qHistory[i], qStar, config).agreement,
     }));
-  }, [result, qStar]);
+  }, [result, qStar, config]);
 
   const last = result.lastUpdate;
 
@@ -1091,7 +1149,7 @@ function ActionValueFADemo() {
                   ? [
                       { key: 'residual', name: 'Bellman optimality residual', color: '#ef4444' },
                       { key: 'rmse', name: 'q* RMSE', color: '#2563eb' },
-                      { key: 'successRate', name: 'greedy success rate', color: '#22c55e' },
+                      { key: 'greedyAgreement', name: '贪心动作一致率', color: '#22c55e' },
                     ]
                   : [
                       { key: 'residual', name: 'behavior-policy Bellman residual', color: '#ef4444' },
@@ -1145,7 +1203,7 @@ function ActionValueFADemo() {
                 </SelectContent>
               </Select>
               <Select value={taskType} onValueChange={(v) => setTaskType(v as TaskType)}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectTrigger data-testid="fa-actionvalue-task-select"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="episodic">episodic path-finding</SelectItem>
                   <SelectItem value="continuing">continuing</SelectItem>
@@ -1181,7 +1239,7 @@ function ActionValueFADemo() {
                   : 'Sarsa 固定 ε 时显示 behavior-policy Bellman residual；q* RMSE 仅作为参考，不保证收敛到 q*。'}
               </div>
               <div>最终 q* RMSE：<span className="font-mono font-semibold">{finalRMSE.toFixed(4)}</span></div>
-              <div>贪心成功率：<span className="font-mono font-semibold">{(finalSuccessRate * 100).toFixed(1)}%</span></div>
+              <div>贪心动作一致率：<span className="font-mono font-semibold">{(finalGreedyAgreement.agreement * 100).toFixed(1)}%</span>（评估 {finalGreedyAgreement.evaluatedStateCount} 个非 terminal 状态）</div>
               <div>权重维度：<span className="font-mono">{result.weightsHistory[0].length}</span></div>
             </CardContent>
           </Card>
@@ -1203,7 +1261,7 @@ function DQNDemo() {
   const [replayCapacity, setReplayCapacity] = useState(2000);
   const [targetUpdateInterval, setTargetUpdateInterval] = useState(100);
   const [episodes, setEpisodes] = useState(200);
-  const [maxSteps, setMaxSteps] = useState(30);
+  const [maxSteps, setMaxSteps] = useState(30); // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
   const [seed, setSeed] = useState(1);
 
   const config = configForTask(taskType);
@@ -1226,28 +1284,48 @@ function DQNDemo() {
     });
   }, [config, hiddenSize, alpha, epsilon, epsilonMode, epsilonMin, batchSize, replayCapacity, targetUpdateInterval, episodes, maxSteps, seed]);
 
-  const finalQ = result.qHistory[result.qHistory.length - 1];
+  const lastEpisode = result.episodeHistory[result.episodeHistory.length - 1];
+  const finalQ = lastEpisode?.qTableAfterEpisode ?? Array.from({ length: config.rows * config.cols }, () => new Array(5).fill(0));
   const finalPolicy = useMemo(() => greedyPolicy(finalQ), [finalQ]);
   const finalValues = useMemo(() => actionValueToStateValue(finalQ), [finalQ]);
   const finalRMSE = useMemo(() => qTableRMSE(finalQ, qStar), [finalQ, qStar]);
-  const finalSuccessRate = useMemo(() => successRate(finalQ, qStar), [finalQ, qStar]);
+  const finalGreedyAgreement = useMemo(() => greedyActionAgreement(finalQ, qStar, config), [finalQ, qStar, config]);
   const finalOptimalityResidual = useMemo(() => optimalBellmanResidualQ(finalQ, config), [finalQ, config]);
+  const empiricalSuccessRate = useMemo(
+    () => (result.episodeHistory.length === 0 ? 0 : result.episodeHistory.filter((e) => e.success).length / result.episodeHistory.length),
+    [result.episodeHistory]
+  );
 
-  const lossData = useMemo(() => {
-    return result.lossHistory.map((loss, i) => {
-      const q = result.qPerStep[i] ?? result.qHistory[result.qHistory.length - 1];
+  const updateChartData = useMemo(
+    () =>
+      result.updateHistory.map((u) => ({
+        step: u.update,
+        loss: u.batchLoss,
+        rmse: u.qRmse,
+        residual: u.optimalityResidual,
+        targetUpdate: u.targetSynced ? 1 : 0,
+      })),
+    [result.updateHistory]
+  );
+
+  const episodeChartData = useMemo(() => {
+    return result.episodeHistory.map((e, i) => {
+      const window = result.episodeHistory.slice(Math.max(0, i - 9), i + 1);
+      const empirical = window.length === 0 ? 0 : window.filter((x) => x.success).length / window.length;
       return {
-        step: i,
-        loss,
-        return: result.episodeReturnHistory[i] ?? 0,
-        length: result.episodeLengthHistory[i] ?? 0,
-        rmse: qTableRMSE(q, qStar),
-        residual: optimalBellmanResidualQ(q, config),
-        successRate: successRate(q, qStar),
-        targetUpdate: result.targetUpdateSteps.includes(i + 1) ? 1 : 0,
+        episode: e.episode,
+        cumulativeReward: e.cumulativeReward,
+        episodeLength: e.episodeLength,
+        empiricalSuccessRate: empirical,
+        greedyAgreement: greedyActionAgreement(e.qTableAfterEpisode, qStar, config).agreement,
       };
     });
-  }, [result, qStar, config]);
+  }, [result.episodeHistory, qStar, config]);
+
+  const targetSyncSteps = useMemo(
+    () => result.updateHistory.filter((u) => u.targetSynced).map((u) => u.update),
+    [result.updateHistory]
+  );
 
   return (
     <InteractiveDemo title="8.6 Deep Q-learning：真正 mini-batch 更新">
@@ -1272,27 +1350,43 @@ function DQNDemo() {
             </ol>
           </div>
 
-          <div className="bg-gray-50 rounded-xl p-6 border border-gray-200">
-            <LineChart
-              data={lossData}
-              xKey="step"
-              xLabel="训练步"
-              yLabel="loss / return / RMSE / residual"
-              series={[
-                { key: 'loss', name: 'batch loss', color: '#ef4444' },
-                { key: 'return', name: 'episode return', color: '#22c55e' },
-                { key: 'rmse', name: 'q* RMSE', color: '#2563eb' },
-                { key: 'residual', name: 'optimality residual', color: '#f59e0b' },
-                { key: 'successRate', name: 'greedy success rate', color: '#8b5cf6' },
-              ]}
-              height={260}
-            >
-              {result.targetUpdateSteps.length > 0 && (
+          <div className="bg-gray-50 rounded-xl p-6 border border-gray-200 space-y-6">
+            <div data-testid="dqn-update-chart">
+              <h4 className="text-sm font-semibold text-gray-700 mb-2">按 training update</h4>
+              <LineChart
+                data={updateChartData}
+                xKey="step"
+                xLabel="训练更新步"
+                yLabel="loss / q* RMSE / residual"
+                series={[
+                  { key: 'loss', name: 'batch loss', color: '#ef4444' },
+                  { key: 'rmse', name: 'q* RMSE', color: '#2563eb' },
+                  { key: 'residual', name: 'optimality residual', color: '#f59e0b' },
+                ]}
+                height={220}
+              />
+              {targetSyncSteps.length > 0 && (
                 <div className="text-xs text-gray-500 mt-1">
-                  竖线位置（目标网络同步）：{result.targetUpdateSteps.join(', ')}
+                  目标网络同步步：{targetSyncSteps.join(', ')}
                 </div>
               )}
-            </LineChart>
+            </div>
+            <div data-testid="dqn-episode-chart">
+              <h4 className="text-sm font-semibold text-gray-700 mb-2">按 episode</h4>
+              <LineChart
+                data={episodeChartData}
+                xKey="episode"
+                xLabel="回合"
+                yLabel="return / length / success rate"
+                series={[
+                  { key: 'cumulativeReward', name: 'cumulative reward', color: '#22c55e' },
+                  { key: 'episodeLength', name: 'episode length', color: '#f59e0b' },
+                  { key: 'empiricalSuccessRate', name: 'empirical success rate (10-ep window)', color: '#8b5cf6' },
+                  { key: 'greedyAgreement', name: '贪心动作一致率', color: '#06b6d4' },
+                ]}
+                height={220}
+              />
+            </div>
           </div>
 
           {result.lastBatch.length > 0 && (
@@ -1341,7 +1435,7 @@ function DQNDemo() {
             </CardHeader>
             <CardContent className="space-y-4">
               <Select value={taskType} onValueChange={(v) => setTaskType(v as TaskType)}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectTrigger data-testid="dqn-task-select"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="episodic">episodic path-finding</SelectItem>
                   <SelectItem value="continuing">continuing</SelectItem>
@@ -1376,11 +1470,12 @@ function DQNDemo() {
             </CardHeader>
             <CardContent className="text-sm text-gray-700 space-y-1">
               <div>最终 q* RMSE：<span className="font-mono font-semibold">{finalRMSE.toFixed(4)}</span></div>
-              <div>贪心成功率：<span className="font-mono font-semibold">{(finalSuccessRate * 100).toFixed(1)}%</span></div>
+              <div>贪心动作一致率：<span className="font-mono font-semibold">{(finalGreedyAgreement.agreement * 100).toFixed(1)}%</span>（评估 {finalGreedyAgreement.evaluatedStateCount} 个状态）</div>
+              <div>回合 empirical success rate：<span className="font-mono font-semibold">{(empiricalSuccessRate * 100).toFixed(1)}%</span></div>
               <div>最优残差：<span className="font-mono font-semibold">{finalOptimalityResidual.toFixed(4)}</span></div>
               <div>回放缓冲当前大小：<span className="font-mono">{result.finalReplaySize}</span></div>
-              <div>训练步数：<span className="font-mono">{result.lossHistory.length}</span></div>
-              <div>目标网络同步次数：<span className="font-mono">{result.targetUpdateSteps.length}</span></div>
+              <div>训练更新步数：<span className="font-mono">{result.updateHistory.length}</span></div>
+              <div>目标网络同步次数：<span className="font-mono">{targetSyncSteps.length}</span></div>
             </CardContent>
           </Card>
         </div>
@@ -1486,3 +1581,4 @@ function SimpleBarChart({
     </div>
   );
 }
+

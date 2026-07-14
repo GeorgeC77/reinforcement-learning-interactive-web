@@ -882,7 +882,7 @@ export function estimateActionValuesMC(
   policy: Policy,
   config: GridWorldConfig,
   numEpisodes: number = 50,
-  maxSteps: number = 30
+  maxSteps: number = 30 // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
 ): { policy: Policy; qValues: number[][]; returns: number[][][] } {
   const numStates = config.rows * config.cols;
   const returns: number[][][] = Array.from({ length: numStates }, () =>
@@ -944,7 +944,7 @@ export function estimateStateValueMC(
   policy: Policy,
   config: GridWorldConfig,
   numEpisodes: number,
-  maxSteps: number = 30
+  maxSteps: number = 30 // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
 ): { estimates: number[]; returns: number[] } {
   const estimates: number[] = [];
   const returns: number[] = [];
@@ -1164,7 +1164,7 @@ export function tdZeroPrediction(
   policy: Policy,
   config: GridWorldConfig,
   alpha: number = 0.1,
-  horizonH: number = 30,
+  horizonH: number = 30, // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
   episodes: number = 200,
   seed: number = 1
 ): PredictionResult {
@@ -1226,7 +1226,7 @@ export function sarsa(
   alpha: number = 0.1,
   epsilon0: number = 0.3,
   epsilonMode: EpsilonScheduleMode = 'fixed',
-  horizonH: number = 30,
+  horizonH: number = 30, // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
   episodes: number = 200,
   seed: number = 1
 ): ControlResult {
@@ -1321,7 +1321,7 @@ export function qLearning(
   alpha: number = 0.1,
   epsilon0: number = 0.3,
   epsilonMode: EpsilonScheduleMode = 'fixed',
-  horizonH: number = 30,
+  horizonH: number = 30, // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
   episodes: number = 200,
   seed: number = 1
 ): ControlResult {
@@ -1411,7 +1411,7 @@ export function nStepSarsa(
   epsilon0: number = 0.3,
   epsilonMode: EpsilonScheduleMode = 'fixed',
   n: number = 3,
-  horizonH: number = 30,
+  horizonH: number = 30, // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
   episodes: number = 200,
   seed: number = 1
 ): ControlResult {
@@ -1573,7 +1573,7 @@ export function expectedSarsa(
   alpha: number = 0.1,
   epsilon0: number = 0.3,
   epsilonMode: EpsilonScheduleMode = 'fixed',
-  horizonH: number = 30,
+  horizonH: number = 30, // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
   episodes: number = 200,
   seed: number = 1
 ): ControlResult {
@@ -1665,7 +1665,7 @@ export function sarsaLambda(
   epsilon0: number = 0.3,
   epsilonMode: EpsilonScheduleMode = 'fixed',
   lambda: number = 0.8,
-  horizonH: number = 30,
+  horizonH: number = 30, // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
   episodes: number = 200,
   seed: number = 1
 ): ControlResult {
@@ -1773,7 +1773,7 @@ export function tdLambdaPrediction(
   config: GridWorldConfig,
   alpha: number = 0.1,
   lambda: number = 0.8,
-  horizonH: number = 30,
+  horizonH: number = 30, // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
   episodes: number = 200,
   seed: number = 1
 ): PredictionResult {
@@ -1843,7 +1843,7 @@ export function tdLambdaPrediction(
 export function mcBasic(
   config: GridWorldConfig,
   numEpisodesPerPair: number = 20,
-  maxSteps: number = 30
+  maxSteps: number = 30 // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
 ): { policy: Policy; qValues: number[][]; returns: number[][][] } {
   const numStates = config.rows * config.cols;
   const numActions = 5;
@@ -1898,7 +1898,7 @@ export interface MCBasicIteration {
 export function mcBasicPolicyIteration(
   config: GridWorldConfig,
   episodesPerPair: number = 20,
-  maxSteps: number = 30,
+  maxSteps: number = 30, // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
   maxPolicyIterations: number = 20,
   initialPolicy?: Policy
 ): {
@@ -1997,7 +1997,7 @@ export function runMCExploringStartsEpisodes(
   learnerState: MCLearnerState,
   config: GridWorldConfig,
   additionalEpisodes: number,
-  maxSteps: number = 30,
+  maxSteps: number = 30, // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
   visitMode: 'first-visit' | 'every-visit' = 'first-visit'
 ): MCLearnerState {
   const numStates = config.rows * config.cols;
@@ -2052,7 +2052,7 @@ export function runMCEpsilonGreedyEpisodes(
   learnerState: MCLearnerState,
   config: GridWorldConfig,
   additionalEpisodes: number,
-  maxSteps: number = 30,
+  maxSteps: number = 30, // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
   epsilonSchedule: EpsilonSchedule = 'fixed',
   baseEpsilon: number = 0.3,
   visitMode: 'first-visit' | 'every-visit' = 'first-visit'
@@ -2125,6 +2125,39 @@ export function qTableRMSE(q: number[][], qRef: number[][]): number {
   return count === 0 ? 0 : Math.sqrt(sum / count);
 }
 
+/**
+ * Greedy action agreement: for each non-terminal state with a non-trivial decision,
+ * check whether at least one greedy action under `q` is also optimal under `qStar`.
+ */
+export function greedyActionAgreement(
+  q: number[][],
+  qStar: number[][],
+  config: GridWorldConfig
+): { agreement: number; evaluatedStateCount: number } {
+  const tolerance = 1e-6;
+  let match = 0;
+  let evaluated = 0;
+  for (let s = 0; s < q.length; s++) {
+    if (isTerminal(s, config)) continue;
+    const maxQ = Math.max(...q[s]);
+    const greedyActions = q[s]
+      .map((val, a) => ({ val, a }))
+      .filter(({ val }) => Math.abs(val - maxQ) <= tolerance)
+      .map(({ a }) => a);
+    const maxQStar = Math.max(...qStar[s]);
+    const optimalActions = qStar[s]
+      .map((val, a) => ({ val, a }))
+      .filter(({ val }) => Math.abs(val - maxQStar) <= tolerance)
+      .map(({ a }) => a);
+    // Exclude states where every action is optimal (no decision meaning).
+    if (optimalActions.length === q[s].length) continue;
+    evaluated++;
+    const optimalSet = new Set(optimalActions);
+    if (greedyActions.some((a) => optimalSet.has(a))) match++;
+  }
+  return { agreement: evaluated === 0 ? 0 : match / evaluated, evaluatedStateCount: evaluated };
+}
+
 export type EpsilonSchedule = 'fixed' | 'decaying-with-floor' | 'glie';
 
 export function computeEpsilon(
@@ -2169,7 +2202,7 @@ export function offPolicyMCEvaluation(
   config: GridWorldConfig,
   numEpisodesPerPair: number = 20,
   type: 'ordinary' | 'weighted' = 'ordinary',
-  maxSteps: number = 30
+  maxSteps: number = 30 // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
 ): {
   qValues: number[][];
   qHistory: number[][][];
@@ -2318,3 +2351,4 @@ export function validateEnvironment(config: GridWorldConfig = DEFAULT_CONFIG): V
     return { ...c, actual, passed };
   });
 }
+

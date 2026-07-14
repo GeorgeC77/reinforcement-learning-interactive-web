@@ -5,18 +5,21 @@ import {
   randomPolicy,
   policyBellmanResidualQ,
   optimalBellmanResidualQ,
+  estimateTrueActionValues,
+  greedyActionAgreement,
   type Action,
 } from './gridworld';
 import {
   semiGradientTD,
   actionValueFA,
   dqnGridWorld,
+  lstdFromTrajectory,
   SimpleMLP,
   coordinateFeatures,
   stationaryDistribution,
 } from './fa';
 
-function assert(cond: boolean, msg: string) {
+function assert(cond: boolean, msg: string): asserts cond {
   if (!cond) throw new Error(`Test failed: ${msg}`);
 }
 
@@ -49,7 +52,7 @@ export function runFATests() {
     lambda: 0,
     featureMode: 'coordinate',
     episodes: 50,
-    maxSteps: 30,
+    maxSteps: 30, // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
     seed: 77,
   });
   const sgB = semiGradientTD(policy, DEFAULT_CONFIG, {
@@ -57,7 +60,7 @@ export function runFATests() {
     lambda: 0,
     featureMode: 'coordinate',
     episodes: 50,
-    maxSteps: 30,
+    maxSteps: 30, // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
     seed: 77,
   });
   assert(sgA.valuesHistory.length === sgB.valuesHistory.length, 'semi-gradient TD history length mismatch');
@@ -77,7 +80,7 @@ export function runFATests() {
     lambda: 0,
     featureMode: 'coordinate',
     episodes: 50,
-    maxSteps: 30,
+    maxSteps: 30, // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
     seed: 78,
   });
   const sgD = semiGradientTD(randPolicy, DEFAULT_CONFIG, {
@@ -85,7 +88,7 @@ export function runFATests() {
     lambda: 0,
     featureMode: 'coordinate',
     episodes: 50,
-    maxSteps: 30,
+    maxSteps: 30, // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
     seed: 79,
   });
   const different = sgC.valuesHistory.some((v, i) => !arraysNear(v, sgD.valuesHistory[i], 1e-9));
@@ -221,16 +224,50 @@ export function runFATests() {
     maxSteps: 20,
     seed: 88,
   });
-  assert(dqnA.qHistory.length === dqnB.qHistory.length, 'DQN qHistory length mismatch');
-  assert(qTablesNear(dqnA.qHistory, dqnB.qHistory, 1e-9), 'DQN q-history mismatch');
-  assert(arraysNear(dqnA.lossHistory, dqnB.lossHistory, 1e-9), 'DQN loss history mismatch');
-  assert(arraysNear(dqnA.episodeReturnHistory, dqnB.episodeReturnHistory, 1e-9), 'DQN return history mismatch');
-  assert(arraysNear(dqnA.episodeLengthHistory, dqnB.episodeLengthHistory, 1e-9), 'DQN length history mismatch');
-  assert(arraysNear(dqnA.visitCounts, dqnB.visitCounts, 1e-9), 'DQN visit counts mismatch');
   assert(
-    arraysNear(dqnA.targetUpdateSteps, dqnB.targetUpdateSteps, 1e-9),
-    'DQN target update steps mismatch'
+    dqnA.episodeHistory.length === dqnB.episodeHistory.length,
+    'DQN episodeHistory length mismatch'
   );
+  assert(
+    dqnA.updateHistory.length === dqnB.updateHistory.length,
+    'DQN updateHistory length mismatch'
+  );
+  assert(
+    qTablesNear(
+      dqnA.episodeHistory.map((e) => e.qTableAfterEpisode),
+      dqnB.episodeHistory.map((e) => e.qTableAfterEpisode),
+      1e-9
+    ),
+    'DQN q-history mismatch'
+  );
+  assert(
+    arraysNear(
+      dqnA.updateHistory.map((u) => u.batchLoss),
+      dqnB.updateHistory.map((u) => u.batchLoss),
+      1e-9
+    ),
+    'DQN loss history mismatch'
+  );
+  assert(
+    arraysNear(
+      dqnA.episodeHistory.map((e) => e.cumulativeReward),
+      dqnB.episodeHistory.map((e) => e.cumulativeReward),
+      1e-9
+    ),
+    'DQN return history mismatch'
+  );
+  assert(
+    arraysNear(
+      dqnA.episodeHistory.map((e) => e.episodeLength),
+      dqnB.episodeHistory.map((e) => e.episodeLength),
+      1e-9
+    ),
+    'DQN length history mismatch'
+  );
+  assert(arraysNear(dqnA.visitCounts, dqnB.visitCounts, 1e-9), 'DQN visit counts mismatch');
+  const syncA = dqnA.updateHistory.filter((u) => u.targetSynced).map((u) => u.update);
+  const syncB = dqnB.updateHistory.filter((u) => u.targetSynced).map((u) => u.update);
+  assert(arraysNear(syncA, syncB, 1e-9), 'DQN target update steps mismatch');
 
   // 8. DQN initial weights reproducible
   function makeNet(seed: number) {
@@ -313,8 +350,9 @@ export function runFATests() {
     maxSteps: 10,
     seed: 7,
   });
-  assert(dqnShort.targetUpdateSteps.length > 0, 'target network should sync at least once');
-  dqnShort.targetUpdateSteps.forEach((s) => {
+  const shortSyncSteps = dqnShort.updateHistory.filter((u) => u.targetSynced).map((u) => u.update);
+  assert(shortSyncSteps.length > 0, 'target network should sync at least once');
+  shortSyncSteps.forEach((s) => {
     assert(s % 5 === 0, `target update step ${s} should be a multiple of interval 5`);
   });
 
@@ -331,7 +369,9 @@ export function runFATests() {
     maxSteps: 20,
     seed: 89,
   });
-  const dqnDiffers = dqnA.lossHistory.some((loss, i) => !near(loss, dqnC.lossHistory[i], 1e-9));
+  const dqnDiffers = dqnA.updateHistory.some(
+    (u, i) => !near(u.batchLoss, dqnC.updateHistory[i].batchLoss, 1e-9)
+  );
   assert(dqnDiffers, 'different DQN seed should usually produce different loss history');
 
   // 14. DQN gradient descent moves prediction toward target
@@ -353,5 +393,99 @@ export function runFATests() {
     'DQN training should move prediction closer to target'
   );
 
+  // 15. DQN updateHistory and episodeHistory lengths are consistent
+  assert(dqnA.updateHistory.length > 0, 'DQN should produce at least one update');
+  assert(dqnA.episodeHistory.length === 20, 'DQN episodeHistory should match episodes');
+  assert(
+    dqnA.updateHistory.every((u) => u.update > 0 && Number.isFinite(u.batchLoss)),
+    'DQN updateHistory should contain valid batchLoss'
+  );
+
+  // 16. DQN update-level records must not fake episode returns
+  assert(
+    !dqnA.updateHistory.some((u) => 'return' in u || 'length' in u),
+    'DQN updateHistory should not contain episode return/length placeholders'
+  );
+
+  // 17. greedyActionAgreement excludes terminal states
+  const qStar = estimateTrueActionValues(EPISODIC_PATH_CONFIG);
+  const agreement = greedyActionAgreement(qStar, qStar, EPISODIC_PATH_CONFIG);
+  assert(agreement.agreement === 1, 'q* should agree with itself');
+  assert(
+    agreement.evaluatedStateCount === EPISODIC_PATH_CONFIG.rows * EPISODIC_PATH_CONFIG.cols - 1,
+    'greedyActionAgreement should exclude the single terminal state'
+  );
+
+  // 18. empirical success rate is derived from real episodes
+  const empiricalSuccess =
+    dqnA.episodeHistory.filter((e) => e.success).length / dqnA.episodeHistory.length;
+  assert(Number.isFinite(empiricalSuccess), 'empirical success rate should be finite');
+  assert(empiricalSuccess >= 0 && empiricalSuccess <= 1, 'empirical success rate should be in [0,1]');
+
+  // 19. selected weight mode changes weighted RMSE
+  function weightedRmseAt(values: number[], trueValues: number[], weights: number[]) {
+    const total = weights.reduce((s, w) => s + w, 0);
+    if (total === 0) return 0;
+    return Math.sqrt(
+      values.reduce((sum, v, i) => sum + weights[i] * (v - trueValues[i]) ** 2, 0) / total
+    );
+  }
+  const sgUniform = semiGradientTD(policy, DEFAULT_CONFIG, {
+    alpha: 0.05,
+    lambda: 0,
+    featureMode: 'coordinate',
+    episodes: 50,
+    maxSteps: 30, // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
+    seed: 80,
+  });
+  const lastIdx = sgUniform.valuesHistory.length - 1;
+  const uniformWeights = new Array(9).fill(1 / 9);
+  const empiricalWeights =
+    sgUniform.visitCountsHistory[lastIdx].reduce((s, v) => s + v, 0) === 0
+      ? uniformWeights
+      : sgUniform.visitCountsHistory[lastIdx].map((v) => v / sgUniform.visitCountsHistory[lastIdx].reduce((s, w) => s + w, 0));
+  const uniformRmse = weightedRmseAt(sgUniform.valuesHistory[lastIdx], sgUniform.trueValues, uniformWeights);
+  const empiricalRmse = weightedRmseAt(
+    sgUniform.valuesHistory[lastIdx],
+    sgUniform.trueValues,
+    empiricalWeights
+  );
+  assert(
+    Math.abs(uniformRmse - empiricalRmse) > 1e-6,
+    'uniform and empirical weighted RMSE should differ when visits are non-uniform'
+  );
+
+  // 20. visitCountsHistory aligns with valuesHistory
+  assert(
+    sgUniform.visitCountsHistory.length === sgUniform.valuesHistory.length,
+    'visitCountsHistory should align with valuesHistory'
+  );
+
+  // 21. singular LSTD returns ok=false
+  const singularLstd = lstdFromTrajectory(policy, DEFAULT_CONFIG, {
+    featureMode: 'coordinate',
+    polynomialDegree: 1,
+    episodes: 1,
+    maxSteps: 2,
+    seed: 1,
+  });
+  assert(!singularLstd.ok, 'severely under-sampled LSTD should fail');
+
+  // 22. LSTD with enough data returns finite w and does not silently return zero vector
+  const fullLstd = lstdFromTrajectory(policy, DEFAULT_CONFIG, {
+    featureMode: 'coordinate',
+    polynomialDegree: 2,
+    episodes: 200,
+    maxSteps: 30, // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
+    seed: 1,
+  });
+  assert(fullLstd.ok, 'well-sampled LSTD should succeed');
+  assert(
+    fullLstd.w.some((x) => Math.abs(x) > 1e-12),
+    'LSTD solution should not be a silent zero vector'
+  );
+  assert(Number.isFinite(fullLstd.conditionEstimate), 'LSTD condition estimate should be finite');
+
   console.log('All function approximation tests passed.');
 }
+

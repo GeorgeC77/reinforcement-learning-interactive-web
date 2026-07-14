@@ -737,3 +737,4 @@ function sampleOutcome(outcomes: StochasticOutcome[], rng: () => number): Stocha
   }
   return outcomes[outcomes.length - 1];
 }
+

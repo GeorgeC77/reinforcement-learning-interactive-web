@@ -614,7 +614,7 @@ S_{t+1} &\xrightarrow{\text{Critic } v_w} \text{bootstrap} \\
 
 function QacDemo() {
   const [seed, setSeed] = useState(42);
-  const [horizonH, setHorizonH] = useState(30);
+  const [horizonH, setHorizonH] = useState(30); // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
   const [taskType, setTaskType] = useState<TaskType>('episodic');
   const [actorAlpha, setActorAlpha] = useState(0.05);
   const [criticAlpha, setCriticAlpha] = useState(0.1);
@@ -840,7 +840,7 @@ function BaselineAdvantageDemo() {
     () =>
       a2c(config, {
         seed: 1,
-        horizonH: 30,
+        horizonH: 30, // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
         actorAlpha: 0.05,
         criticAlpha: 0.1,
         episodes: 50,
@@ -1309,7 +1309,7 @@ function ExactAdvantagePanel({ config }: { config: GridWorldConfig }) {
 
 function A2cDemo() {
   const [seed, setSeed] = useState(42);
-  const [horizonH, setHorizonH] = useState(30);
+  const [horizonH, setHorizonH] = useState(30); // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
   const [taskType, setTaskType] = useState<TaskType>('episodic');
   const [actorAlpha, setActorAlpha] = useState(0.05);
   const [criticAlpha, setCriticAlpha] = useState(0.1);
@@ -1469,7 +1469,7 @@ function classifyOffPolicyError(err: unknown): OffPolicyResultState {
 
 function OffPolicyDemo() {
   const [seed, setSeed] = useState(42);
-  const [horizonH, setHorizonH] = useState(30);
+  const [horizonH, setHorizonH] = useState(30); // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
   const [taskType, setTaskType] = useState<TaskType>('episodic');
   const [actorAlpha, setActorAlpha] = useState(0.05);
   const [criticAlpha, setCriticAlpha] = useState(0.1);
@@ -2129,3 +2129,4 @@ function DeterministicAcDemo() {
     </InteractiveDemo>
   );
 }
+

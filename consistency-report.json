@@ -1,0 +1,68 @@
+{
+  "errors": [],
+  "warnings": [
+    {
+      "file": "src\\pages\\chapters\\chapter05\\OverviewPage.tsx",
+      "line": 36,
+      "message": "“完整回合” wording found; verify it is not used in a continuing setting"
+    },
+    {
+      "file": "src\\pages\\chapters\\chapter07\\TdPage.tsx",
+      "line": 299,
+      "message": "“完整回合” wording found; verify it is not used in a continuing setting"
+    }
+  ],
+  "allowlisted": [
+    {
+      "file": "src\\lib\\rl\\gridworld.ts",
+      "line": 368,
+      "message": "Unseeded Math.random() in sampleAction",
+      "function": "sampleAction",
+      "reason": "shared unseeded helper for legacy chapter interactions"
+    },
+    {
+      "file": "src\\lib\\rl\\gridworld.ts",
+      "line": 774,
+      "message": "Unseeded Math.random() in shuffleInPlace",
+      "function": "shuffleInPlace",
+      "reason": "internal helper used only by asyncValueIteration for random subset ordering"
+    },
+    {
+      "file": "src\\lib\\rl\\gridworld.ts",
+      "line": 804,
+      "message": "Unseeded Math.random() in asyncValueIteration",
+      "function": "asyncValueIteration",
+      "reason": "legacy unseeded interactive visualization helper"
+    },
+    {
+      "file": "src\\lib\\rl\\gridworld.ts",
+      "line": 2014,
+      "message": "Unseeded Math.random() in runMCExploringStartsEpisodes",
+      "function": "runMCExploringStartsEpisodes",
+      "reason": "legacy unseeded MC exploring-starts helper used by chapter 5 UI"
+    },
+    {
+      "file": "src\\lib\\rl\\gridworld.ts",
+      "line": 2015,
+      "message": "Unseeded Math.random() in runMCExploringStartsEpisodes",
+      "function": "runMCExploringStartsEpisodes",
+      "reason": "legacy unseeded MC exploring-starts helper used by chapter 5 UI"
+    }
+  ],
+  "routeCount": 29,
+  "testCoverage": {
+    "algorithmTests": [
+      "test:sa",
+      "test:td",
+      "test:fa",
+      "test:pg",
+      "test:ac",
+      "test:smoke"
+    ],
+    "e2eProjects": [
+      "chromium",
+      "mobile-chromium"
+    ],
+    "routeCount": 29
+  }
+}

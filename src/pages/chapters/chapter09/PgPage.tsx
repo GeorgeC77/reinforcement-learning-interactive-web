@@ -72,10 +72,11 @@ function paramSlider(
   min: number,
   max: number,
   step: number,
-  fixed?: number
+  fixed?: number,
+  testId?: string
 ) {
   return (
-    <div>
+    <div data-testid={testId}>
       <Slider value={[value]} min={min} max={max} step={step} onValueChange={([v]) => set(v)} />
       <div className="mt-1 text-center font-mono text-sm text-gray-700">
         {fixed !== undefined ? value.toFixed(fixed) : value}
@@ -318,10 +319,10 @@ function PolicyFunctionDemo() {
             <CardContent className="space-y-3">
               <div>
                 <div className="text-sm text-gray-600 mb-1">给当前状态所有 logits 加同一常数 c</div>
-                {paramSlider(shift, setShift, -5, 5, 0.1, 1)}
+                {paramSlider(shift, setShift, -5, 5, 0.1, 1, 'pg-shift-slider')}
               </div>
               <p className="text-xs text-gray-600">
-                概率保持不变：π(s) = {formatVec(probs)}。这是因为分子分母同乘 e^c。
+                概率保持不变：π(s) = <span data-testid="pg-shift-probs">{formatVec(probs)}</span>。这是因为分子分母同乘 e^c。
               </p>
             </CardContent>
           </Card>
@@ -429,7 +430,7 @@ function PolicyFunctionDemo() {
               </div>
               <div>
                 <div className="text-sm text-gray-600 mb-1">假设改变量 Δθ</div>
-                {paramSlider(deltaTheta, setDeltaTheta, -2, 2, 0.1, 1)}
+                {paramSlider(deltaTheta, setDeltaTheta, -2, 2, 0.1, 1, 'pg-delta-theta-slider')}
               </div>
               <div className="text-sm text-gray-700 mb-1">受影响状态（|φ_j(s)| &gt; 0）：</div>
               <div className="flex flex-wrap gap-1 mb-2">
@@ -445,7 +446,7 @@ function PolicyFunctionDemo() {
               <div className="text-xs text-gray-600">
                 Δlogit(s, a) = Δθ(a,j) · φ_j(s)。下表展示对 {ACTION_NAMES[selectedParam.action]} 的 logit 影响：
               </div>
-              <div className="max-h-40 overflow-y-auto text-xs">
+              <div data-testid="pg-delta-logits" className="max-h-40 overflow-y-auto text-xs">
                 <table className="w-full text-left">
                   <thead className="text-gray-500 border-b">
                     <tr>
@@ -1155,7 +1156,7 @@ function ReinforceDemo() {
   const [alpha, setAlpha] = useState(0.05);
   const [beta, setBeta] = useState(0.1);
   const [episodes, setEpisodes] = useState(120);
-  const [maxSteps, setMaxSteps] = useState(30);
+  const [maxSteps, setMaxSteps] = useState(30); // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
   const [seed, setSeed] = useState(1);
   const [step, setStep] = useState(0);
   const [useBaseline, setUseBaseline] = useState(false);
@@ -1602,3 +1603,4 @@ function BaselineBridgeDemo() {
     </InteractiveDemo>
   );
 }
+

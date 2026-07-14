@@ -32,15 +32,47 @@ const routes = [
   '/#/ch10/ac',
 ];
 
+function isExternalTransientError(url: string, errorText: string): boolean {
+  // Network hiccups for external fonts/styles are not application bugs.
+  if (url.includes('fonts.googleapis.com') || url.includes('fonts.gstatic.com')) return true;
+  if (errorText.includes('ERR_CONNECTION_CLOSED') || errorText.includes('ERR_CONNECTION_RESET')) return true;
+  return false;
+}
+
 async function collectErrors(page: Page): Promise<string[]> {
   const errors: string[] = [];
   page.on('pageerror', (err) => errors.push(`pageerror: ${err.message}`));
   page.on('console', (msg) => {
     if (msg.type() === 'error') {
-      errors.push(`console.error: ${msg.text()}`);
+      const text = msg.text();
+      if (text.includes('fonts.googleapis.com') || text.includes('fonts.gstatic.com')) return;
+      errors.push(`console.error: ${text}`);
+    }
+  });
+  page.on('requestfailed', (req) => {
+    const url = req.url();
+    const errorText = req.failure()?.errorText ?? '';
+    if (isExternalTransientError(url, errorText)) return;
+    errors.push(`requestfailed: ${url} ${errorText}`);
+  });
+  page.on('pageerror', (err) => {
+    // also capture unhandled promise rejections surfaced as page errors
+    if (err.message.includes('unhandled')) {
+      errors.push(`unhandled: ${err.message}`);
     }
   });
   return errors;
+}
+
+async function safeClickTab(tab: ReturnType<Page['locator']>) {
+  await tab.scrollIntoViewIfNeeded();
+  try {
+    await tab.click({ force: true });
+  } catch {
+    // Fall back to a programmatic click when the tab is off-screen in a
+    // scrollable tablist on small viewports.
+    await tab.evaluate((el) => el.click());
+  }
 }
 
 for (const route of routes) {
@@ -56,20 +88,29 @@ for (const route of routes) {
     // Main interactive area should exist.
     await expect(page.locator('main, [class*="max-w"], .prose').first()).toBeVisible();
 
-    // Click every tab trigger and ensure no errors are emitted.
-    // On narrow mobile viewports some tabs may overflow their container;
-    // fall back to a programmatic click so we still exercise the content.
-    const tabs = page.locator('[role="tab"]');
-    const count = await tabs.count();
-    for (let i = 0; i < count; i++) {
-      const tab = tabs.nth(i);
-      await tab.scrollIntoViewIfNeeded();
-      try {
-        await tab.click({ force: true, timeout: 3000 });
-      } catch {
-        await tab.evaluate((el: HTMLElement) => el.click());
+    // Click every tab trigger and ensure no errors are emitted. Re-scan after
+    // each click so newly-visible nested tabs are also exercised.
+    const clicked = new Set<string>();
+    let changed = true;
+    while (changed) {
+      changed = false;
+      const tabs = page.locator('[role="tab"]');
+      const count = await tabs.count();
+      for (let i = 0; i < count; i++) {
+        const tab = tabs.nth(i);
+        const id = (await tab.getAttribute('id')) ?? (await tab.textContent()) ?? `tab-${i}`;
+        const key = `${i}-${id}`;
+        if (clicked.has(key)) continue;
+
+        await safeClickTab(tab);
+        await expect(tab).toHaveAttribute('aria-selected', 'true');
+        const controls = await tab.getAttribute('aria-controls');
+        if (controls) {
+          await expect(page.locator(`#${controls}`)).toBeVisible();
+        }
+        clicked.add(key);
+        changed = true;
       }
-      await page.waitForTimeout(150);
     }
 
     expect(errors).toEqual([]);

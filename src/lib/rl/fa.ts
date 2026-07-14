@@ -20,6 +20,8 @@ import {
   optimalBellmanResidualQ,
   epsilonGreedyPolicy,
   greedyPolicy,
+  estimateTrueActionValues,
+  qTableRMSE,
 } from './gridworld';
 
 // ---------------------------------------------------------------------------
@@ -131,17 +133,20 @@ export interface SemiGradientTDOptions {
   seed?: number;
 }
 
-export function semiGradientTD(
-  policy: Policy,
-  config: GridWorldConfig,
-  options: SemiGradientTDOptions
-): {
+export interface SemiGradientTDResult {
   valuesHistory: StateValues[];
   weightsHistory: number[][];
   trueValues: StateValues;
   visitCounts: number[];
+  visitCountsHistory: number[][];
   residualHistory: number[];
-} {
+}
+
+export function semiGradientTD(
+  policy: Policy,
+  config: GridWorldConfig,
+  options: SemiGradientTDOptions
+): SemiGradientTDResult {
   const { alpha, lambda, featureMode, polynomialDegree, episodes, maxSteps, seed = 1 } = options;
   const rng = mulberry32(seed);
   const phi = makeFeatureFn(featureMode, polynomialDegree);
@@ -154,6 +159,7 @@ export function semiGradientTD(
   const valuesHistory: StateValues[] = [];
   const weightsHistory: number[][] = [];
   const visitCounts = new Array(numStates).fill(0);
+  const visitCountsHistory: number[][] = [];
   const residualHistory: number[] = [];
 
   for (let ep = 0; ep < episodes; ep++) {
@@ -187,10 +193,11 @@ export function semiGradientTD(
     const predicted = Array.from({ length: numStates }, (_, s) => dot(phi(s, config), w));
     valuesHistory.push(predicted);
     weightsHistory.push([...w]);
+    visitCountsHistory.push([...visitCounts]);
     residualHistory.push(policyBellmanResidualV(predicted, policy, config));
   }
 
-  return { valuesHistory, weightsHistory, trueValues, visitCounts, residualHistory };
+  return { valuesHistory, weightsHistory, trueValues, visitCounts, visitCountsHistory, residualHistory };
 }
 
 // ---------------------------------------------------------------------------
@@ -384,16 +391,33 @@ export interface DQNBatchItem {
   loss: number;
 }
 
+export interface DQNUpdateRecord {
+  update: number;
+  environmentStep: number;
+  episode: number;
+  batchLoss: number;
+  qTable: number[][];
+  qRmse: number;
+  optimalityResidual: number;
+  replaySize: number;
+  targetSynced: boolean;
+}
+
+export interface DQNEpisodeRecord {
+  episode: number;
+  cumulativeReward: number;
+  episodeLength: number;
+  success: boolean;
+  truncated: boolean;
+  qTableAfterEpisode: number[][];
+}
+
 export interface DQNResult {
-  qHistory: number[][][];
-  qPerStep: number[][][];
-  lossHistory: number[];
+  updateHistory: DQNUpdateRecord[];
+  episodeHistory: DQNEpisodeRecord[];
   finalReplaySize: number;
   lastBatch: DQNBatchItem[];
-  episodeReturnHistory: number[];
-  episodeLengthHistory: number[];
   visitCounts: number[];
-  targetUpdateSteps: number[];
 }
 
 export function dqnGridWorld(config: GridWorldConfig, options: DQNOptions): DQNResult {
@@ -421,15 +445,14 @@ export function dqnGridWorld(config: GridWorldConfig, options: DQNOptions): DQNR
   const targetNet = mainNet.copy();
   const replay: Transition[] = [];
 
-  const qHistory: number[][][] = [];
-  const qPerStep: number[][][] = [];
-  const lossHistory: number[] = [];
-  const episodeReturnHistory: number[] = [];
-  const episodeLengthHistory: number[] = [];
+  const qStar = estimateTrueActionValues(config);
+
+  const updateHistory: DQNUpdateRecord[] = [];
+  const episodeHistory: DQNEpisodeRecord[] = [];
   const visitCounts = new Array(numStates).fill(0);
-  const targetUpdateSteps: number[] = [];
   let lastBatch: DQNBatchItem[] = [];
-  let trainStepCount = 0;
+  let trainUpdateCount = 0;
+  let environmentStepCount = 0;
 
   function stateFeatures(state: number): number[] {
     return coordinateFeatures(state, config);
@@ -450,6 +473,14 @@ export function dqnGridWorld(config: GridWorldConfig, options: DQNOptions): DQNR
       .filter(({ q }) => Math.abs(q - maxQ) < 1e-6)
       .map(({ i }) => i);
     return best[Math.floor(rng() * best.length)] as Action;
+  }
+
+  function buildQTable(): number[][] {
+    const table: number[][] = [];
+    for (let s = 0; s < numStates; s++) {
+      table.push(networkQ(mainNet, s));
+    }
+    return table;
   }
 
   function zeroGradients(): MLPGradients {
@@ -484,11 +515,13 @@ export function dqnGridWorld(config: GridWorldConfig, options: DQNOptions): DQNR
     let state = config.startState;
     let episodeReturn = 0;
     let episodeLength = 0;
+    let reachedTarget = false;
 
     for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
       if (isTerminal(state, config)) break;
       visitCounts[state]++;
       episodeLength++;
+      environmentStepCount++;
 
       const action = selectAction(state, eps);
       const result = step(state, action, config);
@@ -518,45 +551,50 @@ export function dqnGridWorld(config: GridWorldConfig, options: DQNOptions): DQNR
         mainNet.applyGradients(avgGrad, alpha);
 
         lastBatch = batchDetails;
-        lossHistory.push(totalLoss / batch.length);
-        trainStepCount++;
-
-        const qTableNow: number[][] = [];
-        for (let s = 0; s < numStates; s++) {
-          qTableNow.push(networkQ(mainNet, s));
-        }
-        qPerStep.push(qTableNow);
-
-        if (targetUpdateInterval > 0 && trainStepCount % targetUpdateInterval === 0) {
+        trainUpdateCount++;
+        let targetSynced = false;
+        if (targetUpdateInterval > 0 && trainUpdateCount % targetUpdateInterval === 0) {
           targetNet.initFrom(mainNet);
-          targetUpdateSteps.push(trainStepCount);
+          targetSynced = true;
         }
+
+        const qTableNow = buildQTable();
+        updateHistory.push({
+          update: trainUpdateCount,
+          environmentStep: environmentStepCount,
+          episode: ep,
+          batchLoss: totalLoss / batch.length,
+          qTable: qTableNow,
+          qRmse: qTableRMSE(qTableNow, qStar),
+          optimalityResidual: optimalBellmanResidualQ(qTableNow, config),
+          replaySize: replay.length,
+          targetSynced,
+        });
       }
 
       state = result.nextState;
-      if (result.done) break;
+      if (result.done) {
+        if (state === config.targetState) reachedTarget = true;
+        break;
+      }
     }
 
-    episodeReturnHistory.push(episodeReturn);
-    episodeLengthHistory.push(episodeLength);
-
-    const qTable: number[][] = [];
-    for (let s = 0; s < numStates; s++) {
-      qTable.push(networkQ(mainNet, s));
-    }
-    qHistory.push(qTable);
+    episodeHistory.push({
+      episode: ep,
+      cumulativeReward: episodeReturn,
+      episodeLength,
+      success: reachedTarget,
+      truncated: !reachedTarget && episodeLength >= maxSteps,
+      qTableAfterEpisode: buildQTable(),
+    });
   }
 
   return {
-    qHistory,
-    qPerStep,
-    lossHistory,
+    updateHistory,
+    episodeHistory,
     finalReplaySize: replay.length,
     lastBatch,
-    episodeReturnHistory,
-    episodeLengthHistory,
     visitCounts,
-    targetUpdateSteps,
   };
 }
 
@@ -812,11 +850,20 @@ function matVec(a: number[][], v: number[]): number[] {
   return a.map((row) => row.reduce((sum, x, i) => sum + x * v[i], 0));
 }
 
-function invertMatrix(a: number[][]): number[][] | null {
+interface MatrixInvertResult {
+  inverse: number[][];
+  minPivot: number;
+  conditionEstimate: number;
+}
+
+function invertMatrixWithStats(a: number[][]): MatrixInvertResult | null {
   const n = a.length;
   if (n === 0) return null;
   // augment [a | I]
   const aug = a.map((row, i) => [...row, ...Array.from({ length: n }, (_, j) => (j === i ? 1 : 0))]);
+
+  let minPivot = Infinity;
+  let maxPivot = 0;
 
   for (let i = 0; i < n; i++) {
     let pivot = aug[i][i];
@@ -827,7 +874,10 @@ function invertMatrix(a: number[][]): number[][] | null {
         pivotRow = r;
       }
     }
-    if (Math.abs(pivot) < 1e-12) return null;
+    const absPivot = Math.abs(pivot);
+    if (absPivot < 1e-12) return null;
+    minPivot = Math.min(minPivot, absPivot);
+    maxPivot = Math.max(maxPivot, absPivot);
     if (pivotRow !== i) {
       [aug[i], aug[pivotRow]] = [aug[pivotRow], aug[i]];
     }
@@ -843,22 +893,47 @@ function invertMatrix(a: number[][]): number[][] | null {
     }
   }
 
-  return aug.map((row) => row.slice(n));
+  return {
+    inverse: aug.map((row) => row.slice(n)),
+    minPivot,
+    conditionEstimate: minPivot === 0 ? Infinity : maxPivot / minPivot,
+  };
 }
 
-export interface LSTDResult {
-  A: number[][];
-  b: number[];
-  w: number[];
-  featureDim: number;
-}
+export type LSTDResult =
+  | {
+      ok: true;
+      A: number[][];
+      b: number[];
+      w: number[];
+      minPivot: number;
+      conditionEstimate: number;
+      ridgeLambda: number;
+    }
+  | {
+      ok: false;
+      reason: 'singular' | 'near-singular' | 'insufficient-coverage';
+      A: number[][];
+      b: number[];
+      minPivot: number;
+      conditionEstimate: number;
+    };
+
+const LSTD_RIDGE_CANDIDATES = [0, 1e-8, 1e-6, 1e-4, 1e-2];
 
 export function lstdFromTrajectory(
   policy: Policy,
   config: GridWorldConfig,
-  options: { featureMode: FeatureMode; polynomialDegree?: number; episodes?: number; maxSteps?: number; seed?: number }
+  options: {
+    featureMode: FeatureMode;
+    polynomialDegree?: number;
+    episodes?: number;
+    maxSteps?: number;
+    seed?: number;
+    ridgeLambda?: number;
+  }
 ): LSTDResult {
-  const { featureMode, polynomialDegree, episodes = 200, maxSteps = 50, seed = 1 } = options;
+  const { featureMode, polynomialDegree, episodes = 200, maxSteps = 50, seed = 1, ridgeLambda } = options;
   const rng = mulberry32(seed);
   const phi = makeFeatureFn(featureMode, polynomialDegree);
   const featureDim = phi(0, config).length;
@@ -866,6 +941,7 @@ export function lstdFromTrajectory(
 
   let A = matZero(featureDim, featureDim);
   let bVec = new Array(featureDim).fill(0);
+  let transitionCount = 0;
 
   for (let ep = 0; ep < episodes; ep++) {
     let state = config.startState;
@@ -878,12 +954,50 @@ export function lstdFromTrajectory(
       const diff = phiS.map((v, i) => v - gamma * phiNext[i]);
       A = matAdd(A, outer(phiS, diff));
       bVec = bVec.map((v, i) => v + result.reward * phiS[i]);
+      transitionCount++;
       state = result.nextState;
       if (result.done) break;
     }
   }
 
-  const inv = invertMatrix(A);
-  const w = inv ? matVec(inv, bVec) : new Array(featureDim).fill(0);
-  return { A, b: bVec, w, featureDim };
+  const maxDiagonal = Math.max(...A.map((row, i) => Math.abs(row[i])));
+  if (transitionCount < featureDim || maxDiagonal < 1e-12) {
+    return {
+      ok: false,
+      reason: 'insufficient-coverage',
+      A,
+      b: bVec,
+      minPivot: 0,
+      conditionEstimate: Infinity,
+    };
+  }
+
+  const ridgeValues = ridgeLambda !== undefined ? [ridgeLambda] : LSTD_RIDGE_CANDIDATES;
+
+  for (const ridge of ridgeValues) {
+    const Areg = A.map((row, i) => row.map((v, j) => (i === j ? v + ridge : v)));
+    const invStats = invertMatrixWithStats(Areg);
+    if (invStats) {
+      return {
+        ok: true,
+        A,
+        b: bVec,
+        w: matVec(invStats.inverse, bVec),
+        minPivot: invStats.minPivot,
+        conditionEstimate: invStats.conditionEstimate,
+        ridgeLambda: ridge,
+      };
+    }
+  }
+
+  // All candidates failed: report stats from the unregularized matrix.
+  const unregStats = invertMatrixWithStats(A);
+  return {
+    ok: false,
+    reason: 'near-singular',
+    A,
+    b: bVec,
+    minPivot: unregStats?.minPivot ?? 0,
+    conditionEstimate: unregStats?.conditionEstimate ?? Infinity,
+  };
 }

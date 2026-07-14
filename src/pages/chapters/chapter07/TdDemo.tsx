@@ -217,7 +217,7 @@ export default function TdDemo({ title, subtitle, algorithms, defaultAlgorithm }
   const [lambda, setLambda] = useState(0.8);
   const [nStep, setNStep] = useState(3);
   const [episodes, setEpisodes] = useState(100);
-  const [horizonH, setHorizonH] = useState(30);
+  const [horizonH, setHorizonH] = useState(30); // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
   const [seed, setSeed] = useState(1);
   const [task, setTask] = useState<'continuing' | 'episodic'>(getDefaultTask(defaultAlgorithm));
   const [policyPreset, setPolicyPreset] = useState<'goal' | 'random' | 'right'>('goal');
@@ -823,3 +823,4 @@ function algorithmDisplay(a: AlgorithmKind): string {
       return 'TD(λ)';
   }
 }
+

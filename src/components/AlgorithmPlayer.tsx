@@ -103,7 +103,7 @@ export default function AlgorithmPlayer({
           {isPlaying ? <Pause className="w-4 h-4 mr-1" /> : <Play className="w-4 h-4 mr-1" />}
           {isPlaying ? labels.pause : labels.play}
         </Button>
-        <Button variant="outline" size="sm" onClick={next} disabled={currentStep === maxStep}>
+        <Button data-testid="algorithm-player-next" variant="outline" size="sm" onClick={next} disabled={currentStep === maxStep}>
           <SkipForward className="w-4 h-4" />
         </Button>
         <Button variant="outline" size="sm" onClick={reset}>

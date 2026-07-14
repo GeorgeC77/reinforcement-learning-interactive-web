@@ -1,9 +1,9 @@
 /**
  * Site-wide consistency scan.
  *
- * Uses the TypeScript AST for robust, source-accurate checks instead of fragile
- * string slicing. Checks are split into errors (block CI) and warnings
- * (require manual review but do not fail the scan).
+ * Uses the TypeScript AST for robust, source-accurate checks. Checks are split
+ * into errors (block CI) and warnings (require manual review but do not fail
+ * the scan unless they exceed the baseline).
  */
 
 import fs from 'fs';
@@ -15,14 +15,60 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const root = path.resolve(__dirname, '..');
 
+const BASELINE_WARNING_COUNT = 2;
+
+interface AllowlistEntry {
+  file: string;
+  function: string;
+  reason: string;
+}
+
 interface Finding {
   file: string;
   line: number;
   message: string;
+  function?: string;
+  reason?: string;
+}
+
+interface Report {
+  errors: Finding[];
+  warnings: Finding[];
+  allowlisted: Finding[];
+  routeCount: number;
+  testCoverage: {
+    algorithmTests: string[];
+    e2eProjects: string[];
+    routeCount: number;
+  };
 }
 
 const errors: Finding[] = [];
 const warnings: Finding[] = [];
+const allowlisted: Finding[] = [];
+
+const allowedUnseededRandom: AllowlistEntry[] = [
+  {
+    file: 'src/lib/rl/gridworld.ts',
+    function: 'sampleAction',
+    reason: 'shared unseeded helper for legacy chapter interactions',
+  },
+  {
+    file: 'src/lib/rl/gridworld.ts',
+    function: 'shuffleInPlace',
+    reason: 'internal helper used only by asyncValueIteration for random subset ordering',
+  },
+  {
+    file: 'src/lib/rl/gridworld.ts',
+    function: 'asyncValueIteration',
+    reason: 'legacy unseeded interactive visualization helper',
+  },
+  {
+    file: 'src/lib/rl/gridworld.ts',
+    function: 'runMCExploringStartsEpisodes',
+    reason: 'legacy unseeded MC exploring-starts helper used by chapter 5 UI',
+  },
+];
 
 function reportError(file: string, line: number, message: string) {
   errors.push({ file: path.relative(root, file), line, message });
@@ -30,6 +76,10 @@ function reportError(file: string, line: number, message: string) {
 
 function reportWarning(file: string, line: number, message: string) {
   warnings.push({ file: path.relative(root, file), line, message });
+}
+
+function reportAllowlisted(file: string, line: number, message: string, fn: string, reason: string) {
+  allowlisted.push({ file: path.relative(root, file), line, message, function: fn, reason });
 }
 
 function walk(dir: string, filter: (p: string) => boolean): string[] {
@@ -58,10 +108,28 @@ function parseSource(file: string): ts.SourceFile {
   return ts.createSourceFile(file, fs.readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
 }
 
+function getEnclosingFunctionName(node: ts.Node): string | null {
+  let curr: ts.Node | undefined = node;
+  while (curr) {
+    if (ts.isFunctionDeclaration(curr) && curr.name) {
+      return curr.name.text;
+    }
+    if (ts.isMethodDeclaration(curr) && curr.name) {
+      return curr.name.getText();
+    }
+    if (ts.isArrowFunction(curr)) {
+      const parent = curr.parent;
+      if (parent && ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) {
+        return parent.name.text;
+      }
+    }
+    curr = curr.parent;
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // 1. Core AC/PG/SA algorithm files must not call Math.random().
-//    (gridworld.ts intentionally retains legacy unseeded helpers for older
-//     chapters and is reviewed separately.)
 // ---------------------------------------------------------------------------
 const seededAlgorithmFiles = [
   path.join(root, 'src/lib/rl/actorCritic.ts'),
@@ -86,7 +154,7 @@ for (const file of seededAlgorithmFiles) {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Discrete AC algorithms must reference bootstrapOnTruncation (AST-based).
+// 2. Discrete AC algorithms must reference bootstrapOnTruncation.
 // ---------------------------------------------------------------------------
 const actorCriticFile = path.join(root, 'src/lib/rl/actorCritic.ts');
 const acSource = parseSource(actorCriticFile);
@@ -152,11 +220,12 @@ for (const { name, config } of configs) {
 }
 
 // ---------------------------------------------------------------------------
-// 5. Warn about Math.random anywhere in src/lib/rl (legacy shared utilities).
+// 5. src/lib/rl Math.random must be in allowlist.
 // ---------------------------------------------------------------------------
 const rlFiles = walk(path.join(root, 'src/lib/rl'), (p) => p.endsWith('.ts'));
 for (const file of rlFiles) {
   const source = parseSource(file);
+  const relFile = path.relative(root, file).replace(/\\/g, '/');
   function visit(node: ts.Node) {
     if (
       ts.isPropertyAccessExpression(node) &&
@@ -164,7 +233,26 @@ for (const file of rlFiles) {
       (node.expression as ts.Identifier).text === 'Math' &&
       node.name.text === 'random'
     ) {
-      reportWarning(file, lineOf(source.text, node.getStart(source)), 'Unseeded Math.random() found in shared RL library.');
+      const line = lineOf(source.text, node.getStart(source));
+      const fnName = getEnclosingFunctionName(node);
+      const entry = allowedUnseededRandom.find(
+        (e) => e.file === relFile && e.function === fnName
+      );
+      if (entry) {
+        reportAllowlisted(
+          file,
+          line,
+          `Unseeded Math.random() in ${fnName}`,
+          fnName ?? '(unknown)',
+          entry.reason
+        );
+      } else {
+        reportError(
+          file,
+          line,
+          `Unseeded Math.random() in ${fnName ?? '(unknown)'} is not in allowlist.`
+        );
+      }
     }
     ts.forEachChild(node, visit);
   }
@@ -172,17 +260,24 @@ for (const file of rlFiles) {
 }
 
 // ---------------------------------------------------------------------------
-// 6. Warn about hard-coded horizon/maxSteps defaults of 30.
+// 6. Hard-coded horizon/maxSteps defaults of 30 must be annotated.
 // ---------------------------------------------------------------------------
 const pageFiles = walk(path.join(root, 'src/pages'), (p) => p.endsWith('.tsx') || p.endsWith('.ts'));
-for (const file of new Set([...pageFiles, ...rlFiles])) {
+const sourceFiles = new Set([...pageFiles, ...rlFiles]);
+const horizonRegexDirect = /\b(horizonH|horizon|maxSteps)\s*(?::\s*number\s*)?(?:=|:)\s*30\b/;
+const horizonRegexUseState = /\b(horizonH|horizon|maxSteps)\b[^/\n]*=\s*useState\s*\(\s*30\s*\)/;
+for (const file of sourceFiles) {
   const text = fs.readFileSync(file, 'utf8');
   const lines = text.split(/\r?\n/);
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    if (line.includes('//')) continue;
-    if (/\b(horizonH|horizon|maxSteps)\s*[:=]\s*30\b/.test(line)) {
-      reportWarning(file, i + 1, 'Hard-coded horizon/maxSteps = 30 found');
+    const prevLine = i > 0 ? lines[i - 1] : '';
+    const isAllowed =
+      line.includes('CONSISTENCY_ALLOW_DEFAULT_HORIZON') ||
+      prevLine.includes('CONSISTENCY_ALLOW_DEFAULT_HORIZON');
+    if (isAllowed) continue;
+    if (horizonRegexDirect.test(line) || horizonRegexUseState.test(line)) {
+      reportError(file, i + 1, 'Hard-coded horizon/maxSteps = 30 without CONSISTENCY_ALLOW_DEFAULT_HORIZON annotation');
     }
   }
 }
@@ -205,10 +300,59 @@ for (const file of pageFiles) {
 }
 
 // ---------------------------------------------------------------------------
-// Report
+// Build report.
 // ---------------------------------------------------------------------------
+const smokeSpec = path.join(root, 'e2e/smoke.spec.ts');
+let routeCount = 0;
+if (fs.existsSync(smokeSpec)) {
+  const smokeText = fs.readFileSync(smokeSpec, 'utf8');
+  const match = smokeText.match(/const routes\s*=\s*\[([\s\S]*?)\]/);
+  if (match) {
+    routeCount = (match[1].match(/['"]\//g) || []).length;
+  }
+}
+
+const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+const algorithmTests = Object.keys(packageJson.scripts || {}).filter((k) =>
+  /^test:(sa|td|fa|pg|ac|smoke)$/.test(k)
+);
+
+let e2eProjects: string[] = [];
+const playwrightConfig = path.join(root, 'playwright.config.ts');
+if (fs.existsSync(playwrightConfig)) {
+  const pwText = fs.readFileSync(playwrightConfig, 'utf8');
+  const projectMatches = pwText.match(/name:\s*['"]([^'"]+)['"]/g);
+  if (projectMatches) {
+    e2eProjects = projectMatches.map((m) => m.replace(/name:\s*['"]/, '').replace(/['"]$/, ''));
+  }
+}
+
+const report: Report = {
+  errors,
+  warnings,
+  allowlisted,
+  routeCount,
+  testCoverage: {
+    algorithmTests,
+    e2eProjects,
+    routeCount,
+  },
+};
+
+fs.writeFileSync(path.join(root, 'consistency-report.json'), JSON.stringify(report, null, 2));
+
+// ---------------------------------------------------------------------------
+// Report to console.
+// ---------------------------------------------------------------------------
+if (allowlisted.length > 0) {
+  console.log(`ℹ️ ${allowlisted.length} allowlisted finding(s):`);
+  for (const a of allowlisted) {
+    console.log(`  ${a.file}:${a.line} — ${a.message} (${a.reason})`);
+  }
+}
+
 if (warnings.length > 0) {
-  console.warn(`⚠️ Consistency scan produced ${warnings.length} warning(s) for manual review:`);
+  console.warn(`⚠️ Consistency scan produced ${warnings.length} warning(s) for manual review (baseline ${BASELINE_WARNING_COUNT}):`);
   for (const w of warnings) {
     console.warn(`  ${w.file}:${w.line} — ${w.message}`);
   }
@@ -219,6 +363,11 @@ if (errors.length > 0) {
   for (const issue of errors) {
     console.error(`  ${issue.file}:${issue.line} — ${issue.message}`);
   }
+  process.exit(1);
+}
+
+if (warnings.length > BASELINE_WARNING_COUNT) {
+  console.error(`\n❌ Consistency scan failed: ${warnings.length} warnings exceed baseline ${BASELINE_WARNING_COUNT}.`);
   process.exit(1);
 }
 
