@@ -73,7 +73,7 @@ export default function Chapter02StateValuesPage() {
           </div>
         </div>
         <h1 className="text-3xl md:text-4xl font-bold text-gray-900 mb-3">
-          2.1 状态值函数
+          2.2 状态值函数
         </h1>
         <p className="text-gray-600 max-w-2xl mx-auto">
           状态值 v(s) 是从某状态出发遵循策略的期望回报。它是最核心的策略评估指标。

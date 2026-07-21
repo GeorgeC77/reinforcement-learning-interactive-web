@@ -97,7 +97,7 @@ export default function Chapter02BellmanPage() {
           </div>
         </div>
         <h1 className="text-3xl md:text-4xl font-bold text-gray-900 mb-3">
-          2.2 贝尔曼方程
+          2.1 贝尔曼方程
         </h1>
         <p className="text-gray-600 max-w-2xl mx-auto">
           贝尔曼方程描述了状态值函数之间的自举关系。通过迭代备份，我们可以求解任意策略的状态值。

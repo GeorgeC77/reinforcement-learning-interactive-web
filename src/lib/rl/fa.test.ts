@@ -14,6 +14,7 @@ import {
   actionValueFA,
   dqnGridWorld,
   lstdFromTrajectory,
+  rlsTD,
   SimpleMLP,
   coordinateFeatures,
   stationaryDistribution,
@@ -30,6 +31,11 @@ function near(a: number, b: number, eps = 1e-9) {
 function arraysNear(a: number[], b: number[], eps = 1e-9) {
   if (a.length !== b.length) return false;
   return a.every((v, i) => near(v, b[i], eps));
+}
+
+function rmse(a: number[], b: number[]) {
+  if (a.length !== b.length) return Infinity;
+  return Math.sqrt(a.reduce((sum, v, i) => sum + (v - b[i]) ** 2, 0) / a.length);
 }
 
 function qTablesNear(a: number[][][], b: number[][][], eps = 1e-9) {
@@ -485,6 +491,47 @@ export function runFATests() {
     'LSTD solution should not be a silent zero vector'
   );
   assert(Number.isFinite(fullLstd.conditionEstimate), 'LSTD condition estimate should be finite');
+
+  // 23. RLS converges near the LSTD closed-form solution with enough data
+  const rlsResult = rlsTD(policy, DEFAULT_CONFIG, {
+    featureMode: 'coordinate',
+    polynomialDegree: 2,
+    episodes: 200,
+    maxSteps: 30, // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
+    seed: 1,
+  });
+  assert(rlsResult.valuesHistory.length === 200, 'RLS should record per-episode values');
+  assert(rlsResult.stepsProcessed > 0, 'RLS should process transitions');
+  if (fullLstd.ok) {
+    const wRls = rlsResult.weightsHistory[rlsResult.weightsHistory.length - 1];
+    const maxDiff = Math.max(...wRls.map((v, i) => Math.abs(v - fullLstd.w[i])));
+    assert(maxDiff < 0.5, `RLS final w should be close to LSTD w (max diff ${maxDiff.toFixed(3)})`);
+    const finalRmse = rmse(rlsResult.valuesHistory[rlsResult.valuesHistory.length - 1], rlsResult.trueValues);
+    assert(Number.isFinite(finalRmse) && finalRmse < 1, 'RLS final values should have small RMSE');
+  }
+
+  // 24. RLS is reproducible with the same seed
+  const rlsAgain = rlsTD(policy, DEFAULT_CONFIG, {
+    featureMode: 'coordinate',
+    polynomialDegree: 2,
+    episodes: 50,
+    maxSteps: 30, // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
+    seed: 7,
+  });
+  const rlsRepeat = rlsTD(policy, DEFAULT_CONFIG, {
+    featureMode: 'coordinate',
+    polynomialDegree: 2,
+    episodes: 50,
+    maxSteps: 30, // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
+    seed: 7,
+  });
+  assert(
+    arraysNear(
+      rlsAgain.weightsHistory[rlsAgain.weightsHistory.length - 1],
+      rlsRepeat.weightsHistory[rlsRepeat.weightsHistory.length - 1]
+    ),
+    'RLS should be reproducible with the same seed'
+  );
 
   console.log('All function approximation tests passed.');
 }

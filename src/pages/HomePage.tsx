@@ -51,10 +51,12 @@ export default function HomePage() {
             <CheckCircle2 className="w-4 h-4" />
             已完成 {completedCount} / {totalSections}
           </div>
-          <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
-            <Construction className="w-4 h-4" />
-            制作中 {totalSections - completedCount}
-          </div>
+          {totalSections - completedCount > 0 && (
+            <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
+              <Construction className="w-4 h-4" />
+              制作中 {totalSections - completedCount}
+            </div>
+          )}
         </div>
       </section>
 

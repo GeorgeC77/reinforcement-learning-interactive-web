@@ -44,7 +44,7 @@ export default function Chapter04ConvergencePage() {
           </div>
         </div>
         <h1 className="text-3xl md:text-4xl font-bold text-gray-900 mb-3">
-          第 4 章 收敛性与异步动态规划
+          4.2 收敛性与异步动态规划
         </h1>
         <p className="text-gray-600 max-w-2xl mx-auto">
           贝尔曼最优算子是一个压缩映射，值迭代以几何速度收敛。改变更新顺序可得到 Gauss-Seidel 与异步变体。

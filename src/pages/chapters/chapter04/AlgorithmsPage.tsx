@@ -102,7 +102,7 @@ export default function Chapter04AlgorithmsPage() {
           </div>
         </div>
         <h1 className="text-3xl md:text-4xl font-bold text-gray-900 mb-3">
-          第 4 章 值迭代、策略迭代与截断策略迭代
+          4.1 值迭代、策略迭代与截断策略迭代
         </h1>
         <p className="text-gray-600 max-w-2xl mx-auto">
           三种求解贝尔曼最优方程的动态规划算法：值迭代、策略迭代，以及统一二者的截断策略迭代。

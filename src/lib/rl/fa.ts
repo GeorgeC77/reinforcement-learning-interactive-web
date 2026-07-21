@@ -1001,3 +1001,106 @@ export function lstdFromTrajectory(
     conditionEstimate: unregStats?.conditionEstimate ?? Infinity,
   };
 }
+
+
+// ---------------------------------------------------------------------------
+// Recursive Least Squares (RLS) for policy evaluation
+// ---------------------------------------------------------------------------
+
+export interface RLSTDOptions {
+  featureMode: FeatureMode;
+  polynomialDegree?: number;
+  episodes?: number;
+  maxSteps?: number;
+  seed?: number;
+  /** Initial diagonal precision δ; P_0 = (1/δ) I. */
+  delta?: number;
+}
+
+export interface RLSTDResult {
+  weightsHistory: number[][];
+  valuesHistory: StateValues[];
+  trueValues: StateValues;
+  stepsProcessed: number;
+}
+
+function matScale(a: number[][], s: number): number[][] {
+  return a.map((row) => row.map((v) => v * s));
+}
+
+/**
+ * Recursive least squares update of the LSTD estimate w = A^{-1} b with
+ * A = Σ φ(φ − γφ')ᵀ and b = Σ r φ, using the Sherman–Morrison identity
+ * after every transition. Returns the per-episode weight/value history.
+ */
+export function rlsTD(
+  policy: Policy,
+  config: GridWorldConfig,
+  options: RLSTDOptions
+): RLSTDResult {
+  const {
+    featureMode,
+    polynomialDegree,
+    episodes = 200,
+    maxSteps = 50,
+    seed = 1,
+    delta = 1e-3,
+  } = options;
+  const rng = mulberry32(seed);
+  const phi = makeFeatureFn(featureMode, polynomialDegree);
+  const featureDim = phi(0, config).length;
+  const numStates = config.rows * config.cols;
+  const gamma = config.gamma;
+
+  const trueValues = solveStateValues(policy, config);
+
+  // P = (1/δ) I, w = 0, b = 0.
+  const P = matZero(featureDim, featureDim).map((row, i) =>
+    row.map((_, j) => (i === j ? 1 / delta : 0))
+  );
+  const bVec = new Array(featureDim).fill(0);
+
+  const weightsHistory: number[][] = [];
+  const valuesHistory: StateValues[] = [];
+  let stepsProcessed = 0;
+
+  for (let ep = 0; ep < episodes; ep++) {
+    let state = config.startState;
+    for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
+      if (isTerminal(state, config)) break;
+      const action = sampleActionWithRng(policy[state], rng);
+      const result = step(state, action, config);
+      const phiS = phi(state, config);
+      const phiNext = result.done ? new Array(featureDim).fill(0) : phi(result.nextState, config);
+      const d = phiS.map((v, i) => v - gamma * phiNext[i]);
+
+      // Rank-1 Sherman–Morrison update of P = A^{-1} for A ← A + φ dᵀ:
+      // P ← P − (P φ)(dᵀ P) / (1 + dᵀ P φ)
+      const Pphi = matVec(P, phiS);
+      const dTP = new Array(featureDim).fill(0);
+      for (let j = 0; j < featureDim; j++) {
+        for (let i = 0; i < featureDim; i++) dTP[j] += d[i] * P[i][j];
+      }
+      const denom = 1 + d.reduce((s, v, i) => s + v * Pphi[i], 0);
+      if (denom > 1e-12) {
+        const corr = matScale(outer(Pphi, dTP), 1 / denom);
+        for (let i = 0; i < featureDim; i++) {
+          for (let j = 0; j < featureDim; j++) {
+            P[i][j] -= corr[i][j];
+          }
+        }
+      }
+      for (let i = 0; i < featureDim; i++) bVec[i] += result.reward * phiS[i];
+
+      state = result.nextState;
+      stepsProcessed++;
+      if (result.done) break;
+    }
+
+    const w = matVec(P, bVec);
+    weightsHistory.push([...w]);
+    valuesHistory.push(Array.from({ length: numStates }, (_, s) => dot(phi(s, config), w)));
+  }
+
+  return { weightsHistory, valuesHistory, trueValues, stepsProcessed };
+}

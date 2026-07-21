@@ -4,10 +4,20 @@ function collectErrors(page: Page): string[] {
   const errors: string[] = [];
   page.on('pageerror', (err) => errors.push(`pageerror: ${err.message}`));
   page.on('console', (msg) => {
-    if (msg.type() === 'error') errors.push(`console.error: ${msg.text()}`);
+    if (msg.type() === 'error') {
+      const text = msg.text();
+      // Transient external resource failures (fonts, network hiccups) are not app bugs.
+      if (text.includes('fonts.googleapis.com') || text.includes('fonts.gstatic.com')) return;
+      if (/Failed to load resource: net::ERR_/.test(text)) return;
+      errors.push(`console.error: ${text}`);
+    }
   });
   page.on('requestfailed', (req) => {
-    errors.push(`requestfailed: ${req.url()} ${req.failure()?.errorText ?? ''}`);
+    const url = req.url();
+    const errorText = req.failure()?.errorText ?? '';
+    if (url.includes('fonts.googleapis.com') || url.includes('fonts.gstatic.com')) return;
+    if (/ERR_CONNECTION_CLOSED|ERR_CONNECTION_RESET|ERR_TIMED_OUT/.test(errorText)) return;
+    errors.push(`requestfailed: ${url} ${errorText}`);
   });
   return errors;
 }

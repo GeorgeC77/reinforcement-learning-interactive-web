@@ -222,6 +222,13 @@ export const courseManifest: Part[] = [
             status: "completed",
             description: "TD(0)、Sarsa、n-步 Sarsa 与 Q-learning。",
           },
+          {
+            id: "ch07-td-ext",
+            title: "7.2 补充与拓展",
+            path: "/ch07/td-ext",
+            status: "completed",
+            description: "Expected Sarsa、TD(λ) 与 Sarsa(λ)。",
+          },
         ],
       },
       {

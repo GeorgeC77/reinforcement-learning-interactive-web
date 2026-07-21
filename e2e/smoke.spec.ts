@@ -46,6 +46,9 @@ async function collectErrors(page: Page): Promise<string[]> {
     if (msg.type() === 'error') {
       const text = msg.text();
       if (text.includes('fonts.googleapis.com') || text.includes('fonts.gstatic.com')) return;
+      // Generic Chromium resource-load failures duplicate the requestfailed
+      // events we already track (and filter) above.
+      if (/Failed to load resource: net::ERR_/.test(text)) return;
       errors.push(`console.error: ${text}`);
     }
   });

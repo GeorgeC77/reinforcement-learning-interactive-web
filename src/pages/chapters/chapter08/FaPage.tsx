@@ -54,6 +54,7 @@ import {
   distanceStateFeatures,
   stationaryDistribution,
   lstdFromTrajectory,
+  rlsTD,
   type FeatureMode,
   type ActionValueFeatureMode,
   type EpsilonScheduleMode,
@@ -91,6 +92,13 @@ function featureVectorText(state: number, mode: FeatureMode, degree: number, con
   if (mode === 'coordinate') return `[${coordinateFeatures(state, config).map((x) => x.toFixed(2)).join(', ')}]`;
   if (mode === 'distance') return `[${distanceStateFeatures(state, config).map((x) => x.toFixed(2)).join(', ')}]`;
   return `[${polynomialCoordinateFeatures(state, config, degree).map((x) => x.toFixed(2)).join(', ')}]`;
+}
+
+function featuresForState(state: number, mode: FeatureMode, degree: number, config: GridWorldConfig): number[] {
+  if (mode === 'onehot') return oneHotFeatures(state, config);
+  if (mode === 'coordinate') return coordinateFeatures(state, config);
+  if (mode === 'distance') return distanceStateFeatures(state, config);
+  return polynomialCoordinateFeatures(state, config, degree);
 }
 
 function rmse(a: number[], b: number[]) {
@@ -886,6 +894,28 @@ function TheorySection() {
     () => semiGradientTD(policy, config, { alpha: 0.05, lambda: 0, featureMode, polynomialDegree: degree, episodes: 200, maxSteps: 30, seed: lstdSeed }), // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
     [policy, config, featureMode, degree, lstdSeed]
   );
+  const rlsResult = useMemo(
+    () => rlsTD(policy, config, { featureMode, polynomialDegree: degree, episodes: 200, maxSteps: 30, seed: lstdSeed }), // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
+    [policy, config, featureMode, degree, lstdSeed]
+  );
+  const rlsChartData = useMemo(() => {
+    const numStates = config.rows * config.cols;
+    const lstdRmse = lstdResult.ok
+      ? rmse(
+          Array.from({ length: numStates }, (_, s) => {
+            const phi = featuresForState(s, featureMode, degree, config);
+            return phi.reduce((sum, x, i) => sum + x * (lstdResult.w[i] ?? 0), 0);
+          }),
+          rlsResult.trueValues
+        )
+      : null;
+    return rlsResult.valuesHistory.map((v, i) => ({
+      episode: i,
+      rls: rmse(v, rlsResult.trueValues),
+      td: rmse(tdResult.valuesHistory[i] ?? v, tdResult.trueValues),
+      ...(lstdRmse !== null ? { lstd: lstdRmse } : {}),
+    }));
+  }, [rlsResult, tdResult, lstdResult, config, featureMode, degree]);
 
   return (
     <InteractiveDemo title="8.4 理论、投影与收敛">
@@ -1052,15 +1082,59 @@ function TheorySection() {
             title="Recursive Least Squares"
             formula={
               <KaTeX
-                math={String.raw`w_{t+1} = w_t + \alpha_t P_t \phi_t \delta_t, \quad P_{t+1} = P_t - \frac{P_t \phi_t \phi_t^\top P_t}{1 + \phi_t^\top P_t \phi_t}`}
+                math={String.raw`P \leftarrow P - \frac{P \phi (\phi - \gamma \phi')^\top P}{1 + (\phi - \gamma \phi')^\top P \phi}, \quad b \leftarrow b + r\phi, \quad w = P b`}
                 display
               />
             }
-            description="用递归方式在线更新精度矩阵 P，兼顾 TD 的迭代形式与最小二乘的统计效率。"
+            description="每条转移用 Sherman–Morrison 恒等式递推 A⁻¹，在线得到与 LSTD 相同的最小二乘解。"
           />
-          <p className="text-sm text-gray-700">
-            RLS 是 LSTD 的在线近似：不需要存储整个 A 矩阵，但需要维护并更新协方差矩阵 P。
+          <p className="text-xs text-gray-500">
+            演示使用与 LSTD 标签页相同的策略、特征与种子（共 200 回合、{rlsResult.stepsProcessed} 条转移）。
           </p>
+
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">收敛对比（全状态 RMSE）</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <LineChart
+                data={rlsChartData}
+                xKey="episode"
+                xLabel="回合"
+                yLabel="RMSE"
+                series={[
+                  { key: 'rls', name: 'RLS（在线最小二乘）', color: '#8b5cf6' },
+                  { key: 'td', name: '半梯度 TD(0)', color: '#2563eb' },
+                  ...(lstdResult.ok
+                    ? [{ key: 'lstd', name: 'LSTD 闭合解（参考）', color: '#ef4444', strokeDasharray: '6 3' }]
+                    : []),
+                ]}
+                height={220}
+              />
+              <p className="mt-2 text-xs text-gray-500">
+                RLS 通常远快于半梯度 TD，并在数据足够时收敛到与 LSTD 相同的解；代价是维护 P 矩阵。
+              </p>
+            </CardContent>
+          </Card>
+
+          <div className="grid md:grid-cols-3 gap-4 text-sm">
+            <div className="bg-gray-50 rounded p-3 border border-gray-200">
+              <div className="font-semibold mb-1">RLS 最终 w</div>
+              <div className="font-mono break-all">
+                [{rlsResult.weightsHistory[rlsResult.weightsHistory.length - 1].map((x) => x.toFixed(3)).join(', ')}]
+              </div>
+            </div>
+            <div className="bg-gray-50 rounded p-3 border border-gray-200">
+              <div className="font-semibold mb-1">LSTD w</div>
+              <div className="font-mono break-all">
+                [{lstdResult.ok ? lstdResult.w.map((x) => x.toFixed(3)).join(', ') : '—'}]
+              </div>
+            </div>
+            <div className="bg-gray-50 rounded p-3 border border-gray-200">
+              <div className="font-semibold mb-1">半梯度 TD(0) 最终 w</div>
+              <div className="font-mono break-all">[{tdResult.weightsHistory[tdResult.weightsHistory.length - 1].map((x) => x.toFixed(3)).join(', ')}]</div>
+            </div>
+          </div>
         </TabsContent>
       </Tabs>
     </InteractiveDemo>

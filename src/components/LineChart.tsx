@@ -24,6 +24,7 @@ interface LineChartProps {
   yLabel?: string;
   series: Series[];
   height?: number;
+  logY?: boolean;
   children?: ReactNode;
 }
 
@@ -34,6 +35,7 @@ export default function LineChart({
   yLabel,
   series,
   height = 240,
+  logY = false,
   children,
 }: LineChartProps) {
   const colors = ['#2563eb', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899'];
@@ -49,6 +51,9 @@ export default function LineChart({
             label={{ value: xLabel, position: 'insideBottom', offset: -12, fontSize: 12, fill: '#6b7280' }}
           />
           <YAxis
+            scale={logY ? 'log' : 'auto'}
+            domain={logY ? ['auto', 'auto'] : undefined}
+            tickFormatter={logY ? (v: number) => v.toExponential(0) : undefined}
             tick={{ fontSize: 12, fill: '#6b7280' }}
             label={{ value: yLabel, angle: -90, position: 'insideLeft', fontSize: 12, fill: '#6b7280' }}
           />

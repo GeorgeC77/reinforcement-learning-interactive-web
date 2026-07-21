@@ -7,23 +7,45 @@ import KaTeX from '@/components/KaTeX';
 import FormulaCard from '@/components/FormulaCard';
 import InteractiveDemo from '@/components/InteractiveDemo';
 import GridWorld from '@/components/rl/GridWorld';
+import AlgorithmPlayer from '@/components/AlgorithmPlayer';
+import LineChart from '@/components/LineChart';
 import {
   DEFAULT_CONFIG,
   valueIteration,
+  valueIterationConvergence,
 } from '@/lib/rl/gridworld';
 
 export default function Chapter03BoePage() {
   const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [alpha, setAlpha] = useState(1);
   const [beta, setBeta] = useState(0);
+  const [replayStep, setReplayStep] = useState(0);
 
   const { values, policies } = useMemo(() => {
     return valueIteration(config, 200, 1e-6);
   }, [config]);
 
+  const convergence = useMemo(() => {
+    return valueIterationConvergence(config, 200, 1e-6);
+  }, [config]);
+
   const optimalValues = values[values.length - 1];
   const optimalPolicy = policies[policies.length - 1];
   const iterations = values.length - 1;
+
+  const safeReplayStep = Math.min(replayStep, values.length - 1);
+  const replayValues = values[safeReplayStep];
+  const replayPolicy = policies[Math.max(0, safeReplayStep - 1)] ?? policies[0];
+
+  const convergenceChartData = useMemo(() => {
+    const v0Error = convergence.errors[0] ?? 1;
+    return convergence.errors.map((err, k) => ({
+      iteration: k,
+      error: Math.max(err, 1e-12),
+      bound: Math.max(v0Error * Math.pow(config.gamma, k), 1e-12),
+      residual: Math.max(convergence.residuals[k] ?? 0, 1e-12),
+    }));
+  }, [convergence, config.gamma]);
 
   // Affine transformation demo uses the base rewards from DEFAULT_CONFIG
   const affineConfig = useMemo(
@@ -194,6 +216,62 @@ export default function Chapter03BoePage() {
               <RotateCcw className="w-4 h-4 mr-1" />
               重置参数
             </Button>
+          </div>
+        </div>
+      </InteractiveDemo>
+
+      <InteractiveDemo title="值迭代过程回放与收敛">
+        <div className="grid lg:grid-cols-[1fr_340px] gap-6">
+          <div className="flex flex-col items-center justify-center bg-gray-50 rounded-xl p-6 border border-gray-200">
+            <GridWorld
+              config={config}
+              policy={replayPolicy}
+              values={replayValues}
+              showValues
+              className="max-w-full"
+            />
+            <p className="mt-4 text-sm text-gray-500 text-center">
+              第 {safeReplayStep} 次迭代后的值函数与贪心策略
+            </p>
+          </div>
+
+          <div className="space-y-4">
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base">回放控制</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <AlgorithmPlayer
+                  maxStep={values.length - 1}
+                  currentStep={safeReplayStep}
+                  onStepChange={setReplayStep}
+                />
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base">几何收敛（对数坐标）</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <LineChart
+                  data={convergenceChartData}
+                  xKey="iteration"
+                  xLabel="迭代次数 k"
+                  yLabel="误差 / 残差（log）"
+                  logY
+                  series={[
+                    { key: 'error', name: '‖v_k - v*‖∞', color: '#2563eb' },
+                    { key: 'bound', name: '上界 γ^k‖v_0 - v*‖∞', color: '#f59e0b' },
+                    { key: 'residual', name: 'Bellman 残差', color: '#ef4444' },
+                  ]}
+                  height={220}
+                />
+                <p className="mt-2 text-xs text-gray-500">
+                  蓝线始终位于橙色理论上界之下：贝尔曼最优算子是 γ-压缩映射，误差以几何速度衰减。
+                </p>
+              </CardContent>
+            </Card>
           </div>
         </div>
       </InteractiveDemo>
