@@ -15,6 +15,7 @@ import InteractiveDemo from '@/components/InteractiveDemo';
 import GridWorld from '@/components/rl/GridWorld';
 import AlgorithmPlayer from '@/components/AlgorithmPlayer';
 import LineChart from '@/components/LineChart';
+import { usePersistentState } from '@/hooks/usePersistentState';
 import {
   DEFAULT_CONFIG,
   EPISODIC_PATH_CONFIG,
@@ -70,6 +71,8 @@ type TdDemoProps = {
   subtitle: string;
   algorithms: AlgorithmDef[];
   defaultAlgorithm: AlgorithmKind;
+  /** localStorage key prefix for persisting experiment settings. */
+  persistKey: string;
 };
 
 const RIGHT_POLICY: Action[] = [1, 1, 1, 1, 1, 1, 1, 1, 1];
@@ -209,16 +212,16 @@ function UpdateFormula({
   );
 }
 
-export default function TdDemo({ title, subtitle, algorithms, defaultAlgorithm }: TdDemoProps) {
+export default function TdDemo({ title, subtitle, algorithms, defaultAlgorithm, persistKey }: TdDemoProps) {
   const [algorithm, setAlgorithm] = useState<AlgorithmKind>(defaultAlgorithm);
-  const [alpha, setAlpha] = useState(0.2);
-  const [epsilon, setEpsilon] = useState(0.3);
-  const [epsilonMode, setEpsilonMode] = useState<EpsilonScheduleMode>('fixed');
-  const [lambda, setLambda] = useState(0.8);
-  const [nStep, setNStep] = useState(3);
-  const [episodes, setEpisodes] = useState(100);
-  const [horizonH, setHorizonH] = useState(30); // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
-  const [seed, setSeed] = useState(1);
+  const [alpha, setAlpha] = usePersistentState(`${persistKey}.alpha`, 0.2);
+  const [epsilon, setEpsilon] = usePersistentState(`${persistKey}.epsilon`, 0.3);
+  const [epsilonMode, setEpsilonMode] = usePersistentState<EpsilonScheduleMode>(`${persistKey}.epsilonMode`, 'fixed');
+  const [lambda, setLambda] = usePersistentState(`${persistKey}.lambda`, 0.8);
+  const [nStep, setNStep] = usePersistentState(`${persistKey}.nStep`, 3);
+  const [episodes, setEpisodes] = usePersistentState(`${persistKey}.episodes`, 100);
+  const [horizonH, setHorizonH] = usePersistentState(`${persistKey}.horizonH`, 30); // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
+  const [seed, setSeed] = usePersistentState(`${persistKey}.seed`, 1);
   const [task, setTask] = useState<'continuing' | 'episodic'>(getDefaultTask(defaultAlgorithm));
   const [policyPreset, setPolicyPreset] = useState<'goal' | 'random' | 'right'>('goal');
   const [viewMode, setViewMode] = useState<'transition' | 'episode'>('transition');

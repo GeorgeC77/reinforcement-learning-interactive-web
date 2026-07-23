@@ -13,6 +13,7 @@ import InteractiveDemo from '@/components/InteractiveDemo';
 import GridWorld from '@/components/rl/GridWorld';
 import LineChart from '@/components/LineChart';
 import SeedControl from '@/components/SeedControl';
+import { usePersistentState } from '@/hooks/usePersistentState';
 import { mulberry32 } from '@/lib/rl/stochasticApproximation';
 import {
   DEFAULT_CONFIG, ACTION_NAMES,
@@ -76,7 +77,7 @@ function MCBasicDemo() {
   const [result, setResult] = useState<{type:'single-eval';q:number[][];counts:number[][];rmse:number;policy:Policy}|{type:'policy-iteration';iterations:MCBasicIteration[];finalPolicy:Policy;finalQ:number[][];finalQPolicy:Policy;rmse:number;stable:boolean}|null>(null);
   const [iterIndex, setIterIndex] = useState(0);
   const [showImproved, setShowImproved] = useState(false);
-  const [seed, setSeed] = useState(1);
+  const [seed, setSeed] = usePersistentState('ch05.mc-basic.seed', 1);
 
   function run() {
     const rng = mulberry32(seed);
@@ -176,12 +177,12 @@ function MCExploringStartsDemo() {
   const qStar = useMemo(()=>estimateTrueActionValues(config),[config]);
   const [visitMode, setVisitMode] = useState<VisitMode>('first-visit');
   const [horizonT, setHorizonT] = useState(30);
-  const [seed, setSeed] = useState(1);
+  const [seed, setSeed] = usePersistentState('ch05.mc-es.seed', 1);
   const [learnerState, setLearnerState] = useState<MCLearnerState>(()=>createMCLearnerState(config));
   const [rmseHistory, setRmseHistory] = useState<LearningPoint[]>(()=>[{episode:0,rmse:qTableRMSE(createMCLearnerState(config).q,qStar)}]);
   const learnerRef = useRef(learnerState); learnerRef.current = learnerState;
-  const rngRef = useRef<() => number>(mulberry32(1));
-  const rngSeedRef = useRef(1);
+  const rngRef = useRef<() => number>(mulberry32(seed));
+  const rngSeedRef = useRef(seed);
 
   const policy = useMemo(()=>learnerState.policy,[learnerState]);
   const stateValues = useMemo(()=>policyWeightedStateValues(learnerState.q,policy),[learnerState,policy]);
@@ -223,12 +224,12 @@ function MCEpsilonGreedyDemo() {
   const [schedule, setSchedule] = useState<EpsilonSchedule>('fixed');
   const [visitMode, setVisitMode] = useState<VisitMode>('first-visit');
   const [horizonT, setHorizonT] = useState(30);
-  const [seed, setSeed] = useState(1);
+  const [seed, setSeed] = usePersistentState('ch05.mc-eg.seed', 1);
   const [learnerState, setLearnerState] = useState<MCLearnerState>(()=>createMCLearnerState(config, epsilon));
   const [rmseHistory, setRmseHistory] = useState<LearningPoint[]>(()=>[{episode:0,rmse:qTableRMSE(createMCLearnerState(config,epsilon).q,qStar)}]);
   const learnerRef = useRef(learnerState); learnerRef.current = learnerState;
-  const rngRef = useRef<() => number>(mulberry32(1));
-  const rngSeedRef = useRef(1);
+  const rngRef = useRef<() => number>(mulberry32(seed));
+  const rngSeedRef = useRef(seed);
 
   const effectiveEpsilon = learnerState.episodesCompleted===0 ? epsilon : learnerState.currentEpsilon;
   const policy = useMemo(()=>epsilonGreedyPolicy(learnerState.q, effectiveEpsilon),[learnerState, effectiveEpsilon]);

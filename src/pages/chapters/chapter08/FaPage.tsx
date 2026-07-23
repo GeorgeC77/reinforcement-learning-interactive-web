@@ -59,6 +59,7 @@ import {
   type ActionValueFeatureMode,
   type EpsilonScheduleMode,
 } from '@/lib/rl/fa';
+import { usePersistentState } from '@/hooks/usePersistentState';
 import { mulberry32 } from '@/lib/rl/stochasticApproximation';
 
 type TabKey =
@@ -316,7 +317,7 @@ function PolynomialFittingDemo() {
   const [alpha, setAlpha] = useState(0.05);
   const [iterations, setIterations] = useState(200);
   const [noiseStd, setNoiseStd] = useState(0.1);
-  const [seed, setSeed] = useState(1);
+  const [seed, setSeed] = usePersistentState('ch08.poly.seed', 1);
 
   const { weights, predictions } = useMemo(() => {
     const rng = mulberry32(seed);
@@ -422,15 +423,15 @@ function PolynomialFittingDemo() {
 
 // ------------------- 8.2 Semi-gradient TD(0) -------------------
 function SemiGradientDemo() {
-  const [policyPreset, setPolicyPreset] = useState<PolicyPreset>('goal');
-  const [featureMode, setFeatureMode] = useState<FeatureMode>('coordinate');
-  const [degree, setDegree] = useState(2);
-  const [alpha, setAlpha] = useState(0.05);
-  const [lambda, setLambda] = useState(0);
-  const [episodes, setEpisodes] = useState(200);
-  const [maxSteps, setMaxSteps] = useState(30); // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
-  const [seed, setSeed] = useState(1);
-  const [weightMode, setWeightMode] = useState<WeightMode>('uniform');
+  const [policyPreset, setPolicyPreset] = usePersistentState<PolicyPreset>('ch08.sgtd.policyPreset', 'goal');
+  const [featureMode, setFeatureMode] = usePersistentState<FeatureMode>('ch08.sgtd.featureMode', 'coordinate');
+  const [degree, setDegree] = usePersistentState('ch08.sgtd.degree', 2);
+  const [alpha, setAlpha] = usePersistentState('ch08.sgtd.alpha', 0.05);
+  const [lambda, setLambda] = usePersistentState('ch08.sgtd.lambda', 0);
+  const [episodes, setEpisodes] = usePersistentState('ch08.sgtd.episodes', 200);
+  const [maxSteps, setMaxSteps] = usePersistentState('ch08.sgtd.maxSteps', 30); // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
+  const [seed, setSeed] = usePersistentState('ch08.sgtd.seed', 1);
+  const [weightMode, setWeightMode] = usePersistentState<WeightMode>('ch08.sgtd.weightMode', 'uniform');
 
   const config = DEFAULT_CONFIG;
   const policy = useMemo(() => policyFromPreset(policyPreset), [policyPreset]);
@@ -690,7 +691,7 @@ function FeatureDesignDemo() {
   const [lambda, setLambda] = useState(0);
   const [episodes, setEpisodes] = useState(100);
   const [maxSteps, setMaxSteps] = useState(30); // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
-  const [seed, setSeed] = useState(1);
+  const [seed, setSeed] = usePersistentState('ch08.feature.seed', 1);
   const [selectedState, setSelectedState] = useState<number | null>(null);
 
   const config = DEFAULT_CONFIG;
@@ -882,7 +883,7 @@ function TheorySection() {
   const [policyPreset, setPolicyPreset] = useState<PolicyPreset>('goal');
   const [featureMode, setFeatureMode] = useState<FeatureMode>('coordinate');
   const [degree, setDegree] = useState(2);
-  const [lstdSeed, setLstdSeed] = useState(1);
+  const [lstdSeed, setLstdSeed] = usePersistentState('ch08.lstd.seed', 1);
 
   const config = DEFAULT_CONFIG;
   const policy = useMemo(() => policyFromPreset(policyPreset), [policyPreset]);
@@ -1152,7 +1153,7 @@ function ActionValueFADemo() {
   const [episodes, setEpisodes] = useState(200);
   const [maxSteps, setMaxSteps] = useState(30); // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
   const [taskType, setTaskType] = useState<TaskType>('episodic');
-  const [seed, setSeed] = useState(1);
+  const [seed, setSeed] = usePersistentState('ch08.avfa.seed', 1);
 
   const config = configForTask(taskType);
   const qStar = useMemo(() => estimateTrueActionValues(config), [config]);
@@ -1325,18 +1326,18 @@ function ActionValueFADemo() {
 
 // ------------------- 8.6 DQN -------------------
 function DQNDemo() {
-  const [taskType, setTaskType] = useState<TaskType>('episodic');
-  const [hiddenSize, setHiddenSize] = useState(32);
-  const [alpha, setAlpha] = useState(0.01);
-  const [epsilon, setEpsilon] = useState(0.3);
-  const [epsilonMode, setEpsilonMode] = useState<EpsilonScheduleMode>('fixed');
-  const [epsilonMin, setEpsilonMin] = useState(0.01);
-  const [batchSize, setBatchSize] = useState(32);
-  const [replayCapacity, setReplayCapacity] = useState(2000);
-  const [targetUpdateInterval, setTargetUpdateInterval] = useState(100);
-  const [episodes, setEpisodes] = useState(200);
-  const [maxSteps, setMaxSteps] = useState(30); // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
-  const [seed, setSeed] = useState(1);
+  const [taskType, setTaskType] = usePersistentState<TaskType>('ch08.dqn.taskType', 'episodic');
+  const [hiddenSize, setHiddenSize] = usePersistentState('ch08.dqn.hiddenSize', 32);
+  const [alpha, setAlpha] = usePersistentState('ch08.dqn.alpha', 0.01);
+  const [epsilon, setEpsilon] = usePersistentState('ch08.dqn.epsilon', 0.3);
+  const [epsilonMode, setEpsilonMode] = usePersistentState<EpsilonScheduleMode>('ch08.dqn.epsilonMode', 'fixed');
+  const [epsilonMin, setEpsilonMin] = usePersistentState('ch08.dqn.epsilonMin', 0.01);
+  const [batchSize, setBatchSize] = usePersistentState('ch08.dqn.batchSize', 32);
+  const [replayCapacity, setReplayCapacity] = usePersistentState('ch08.dqn.replayCapacity', 2000);
+  const [targetUpdateInterval, setTargetUpdateInterval] = usePersistentState('ch08.dqn.targetUpdateInterval', 100);
+  const [episodes, setEpisodes] = usePersistentState('ch08.dqn.episodes', 200);
+  const [maxSteps, setMaxSteps] = usePersistentState('ch08.dqn.maxSteps', 30); // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
+  const [seed, setSeed] = usePersistentState('ch08.dqn.seed', 1);
 
   const config = configForTask(taskType);
   const qStar = useMemo(() => estimateTrueActionValues(config), [config]);

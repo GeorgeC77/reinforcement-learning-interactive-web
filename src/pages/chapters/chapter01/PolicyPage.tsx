@@ -10,6 +10,7 @@ import GridWorld from '@/components/rl/GridWorld';
 import AlgorithmPlayer from '@/components/AlgorithmPlayer';
 import TrajectoryViewer from '@/components/TrajectoryViewer';
 import SeedControl from '@/components/SeedControl';
+import { usePersistentState } from '@/hooks/usePersistentState';
 import { mulberry32 } from '@/lib/rl/stochasticApproximation';
 import {
   DEFAULT_CONFIG,
@@ -35,7 +36,7 @@ export default function Chapter01PolicyPage() {
   >([]);
   const [currentStep, setCurrentStep] = useState(0);
   const [message, setMessage] = useState('编辑策略后运行一回合，观察生成的轨迹与回报。');
-  const [seed, setSeed] = useState(1);
+  const [seed, setSeed] = usePersistentState('ch01.policy.seed', 1);
 
   const returnValue = useMemo(
     () => (trajectory.length > 0 ? discountedReturn(trajectory, config.gamma) : 0),

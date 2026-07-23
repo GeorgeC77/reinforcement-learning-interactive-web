@@ -25,6 +25,7 @@ import {
   type Action,
   type GridWorldConfig,
 } from '@/lib/rl/gridworld';
+import { usePersistentState } from '@/hooks/usePersistentState';
 import {
   stateFeatures,
   featureDim,
@@ -1157,7 +1158,7 @@ function ReinforceDemo() {
   const [beta, setBeta] = useState(0.1);
   const [episodes, setEpisodes] = useState(120);
   const [maxSteps, setMaxSteps] = useState(30); // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
-  const [seed, setSeed] = useState(1);
+  const [seed, setSeed] = usePersistentState('ch09.reinforce.seed', 1);
   const [step, setStep] = useState(0);
   const [useBaseline, setUseBaseline] = useState(false);
 
@@ -1312,7 +1313,7 @@ function ReinforceDemo() {
 }
 
 function BanditWarmup() {
-  const [seed, setSeed] = useState(1);
+  const [seed, setSeed] = usePersistentState('ch09.bandit.seed', 1);
   const [alpha, setAlpha] = useState(0.2);
   const [beta, setBeta] = useState(0.1);
   const [episodes, setEpisodes] = useState(200);

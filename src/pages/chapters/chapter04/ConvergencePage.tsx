@@ -18,6 +18,7 @@ import AlgorithmPlayer from '@/components/AlgorithmPlayer';
 import LineChart from '@/components/LineChart';
 import ConceptAccordion from '@/components/ConceptAccordion';
 import SeedControl from '@/components/SeedControl';
+import { usePersistentState } from '@/hooks/usePersistentState';
 import { mulberry32 } from '@/lib/rl/stochasticApproximation';
 import {
   DEFAULT_CONFIG,
@@ -302,7 +303,7 @@ function GaussSeidelTab({ config }: { config: typeof DEFAULT_CONFIG }) {
 function AsyncTab({ config }: { config: typeof DEFAULT_CONFIG }) {
   const [mode, setMode] = useState<'single-random' | 'single-sequential'>('single-random');
   const [step, setStep] = useState(0);
-  const [seed, setSeed] = useState(1);
+  const [seed, setSeed] = usePersistentState('ch04.async.seed', 1);
 
   const result = useMemo(() => {
     return asyncValueIteration(config, 100, 1e-6, mode, mulberry32(seed));

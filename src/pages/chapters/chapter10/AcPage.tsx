@@ -32,6 +32,7 @@ import {
   stochasticStepDistribution,
   type StochasticOutcome,
 } from '@/lib/rl/gridworld';
+import { usePersistentState } from '@/hooks/usePersistentState';
 import { mulberry32 } from '@/lib/rl/stochasticApproximation';
 import {
   qac,
@@ -613,7 +614,7 @@ S_{t+1} &\xrightarrow{\text{Critic } v_w} \text{bootstrap} \\
 // ---------------------------------------------------------------------------
 
 function QacDemo() {
-  const [seed, setSeed] = useState(42);
+  const [seed, setSeed] = usePersistentState('ch10.qac.seed', 42);
   const [horizonH, setHorizonH] = useState(30); // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
   const [taskType, setTaskType] = useState<TaskType>('episodic');
   const [actorAlpha, setActorAlpha] = useState(0.05);
@@ -1308,7 +1309,7 @@ function ExactAdvantagePanel({ config }: { config: GridWorldConfig }) {
 // ---------------------------------------------------------------------------
 
 function A2cDemo() {
-  const [seed, setSeed] = useState(42);
+  const [seed, setSeed] = usePersistentState('ch10.a2c.seed', 42);
   const [horizonH, setHorizonH] = useState(30); // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
   const [taskType, setTaskType] = useState<TaskType>('episodic');
   const [actorAlpha, setActorAlpha] = useState(0.05);
@@ -1468,7 +1469,7 @@ function classifyOffPolicyError(err: unknown): OffPolicyResultState {
 }
 
 function OffPolicyDemo() {
-  const [seed, setSeed] = useState(42);
+  const [seed, setSeed] = usePersistentState('ch10.offpolicy.seed', 42);
   const [horizonH, setHorizonH] = useState(30); // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
   const [taskType, setTaskType] = useState<TaskType>('episodic');
   const [actorAlpha, setActorAlpha] = useState(0.05);
@@ -1793,7 +1794,7 @@ function OffPolicyDemo() {
 // ---------------------------------------------------------------------------
 
 function DeterministicAcDemo() {
-  const [seed, setSeed] = useState(1);
+  const [seed, setSeed] = usePersistentState('ch10.dac.seed', 1);
   const [horizonH, setHorizonH] = useState(20);
   const [actorAlpha, setActorAlpha] = useState(0.05);
   const [criticAlpha, setCriticAlpha] = useState(0.1);

@@ -11,6 +11,7 @@ import AlgorithmPlayer from '@/components/AlgorithmPlayer';
 import TrajectoryViewer from '@/components/TrajectoryViewer';
 import LineChart from '@/components/LineChart';
 import SeedControl from '@/components/SeedControl';
+import { usePersistentState } from '@/hooks/usePersistentState';
 import { mulberry32 } from '@/lib/rl/stochasticApproximation';
 import {
   DEFAULT_CONFIG,
@@ -37,7 +38,7 @@ export default function Chapter01ReturnsPage() {
   const [currentStep, setCurrentStep] = useState(0);
   const [absorbing, setAbsorbing] = useState(false);
   const [markovGuess, setMarkovGuess] = useState<number | null>(null);
-  const [seed, setSeed] = useState(1);
+  const [seed, setSeed] = usePersistentState('ch01.returns.seed', 1);
 
   function runEpisode() {
     let state = startState;

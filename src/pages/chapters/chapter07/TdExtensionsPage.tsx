@@ -65,6 +65,7 @@ export default function Chapter07TdExtensionsPage() {
           { key: 'td-lambda', label: 'TD(λ)', category: 'extension' },
         ]}
         defaultAlgorithm="expected"
+        persistKey="ch07.td-ext"
       />
 
       <section className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 md:p-8">

@@ -9,6 +9,7 @@ import FormulaCard from '@/components/FormulaCard';
 import InteractiveDemo from '@/components/InteractiveDemo';
 import GridWorld from '@/components/rl/GridWorld';
 import SeedControl from '@/components/SeedControl';
+import { usePersistentState } from '@/hooks/usePersistentState';
 import { mulberry32 } from '@/lib/rl/stochasticApproximation';
 import {
   DEFAULT_CONFIG,
@@ -37,9 +38,9 @@ export default function Chapter01MdpPage() {
   const [message, setMessage] = useState('点击网格中的状态查看动作与转移细节，或点击「运行一回合」');
   const [stochastic, setStochastic] = useState(false);
   const [slip, setSlip] = useState(0.2);
-  const [seed, setSeed] = useState(1);
-  const rngRef = useRef<() => number>(mulberry32(1));
-  const rngSeedRef = useRef(1);
+  const [seed, setSeed] = usePersistentState('ch01.mdp.seed', 1);
+  const rngRef = useRef<() => number>(mulberry32(seed));
+  const rngSeedRef = useRef(seed);
   if (seed !== rngSeedRef.current) {
     rngSeedRef.current = seed;
     rngRef.current = mulberry32(seed);

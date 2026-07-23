@@ -9,6 +9,7 @@ import InteractiveDemo from '@/components/InteractiveDemo';
 import GridWorld from '@/components/rl/GridWorld';
 import LineChart from '@/components/LineChart';
 import SeedControl from '@/components/SeedControl';
+import { usePersistentState } from '@/hooks/usePersistentState';
 import { mulberry32 } from '@/lib/rl/stochasticApproximation';
 import {
   DEFAULT_CONFIG,
@@ -31,7 +32,7 @@ export default function Chapter02StateValuesPage() {
   const [mcStart, setMcStart] = useState(config.startState);
   const [mcEpisodes, setMcEpisodes] = useState(100);
   const [mcData, setMcData] = useState<{ episode: number; estimate: number; trueValue: number }[]>([]);
-  const [mcSeed, setMcSeed] = useState(1);
+  const [mcSeed, setMcSeed] = usePersistentState('ch02.statevalues.mcSeed', 1);
 
   const valuesA = useMemo(() => solveStateValues(policyA, config), [policyA, config]);
   const valuesB = useMemo(() => solveStateValues(policyB, config), [policyB, config]);

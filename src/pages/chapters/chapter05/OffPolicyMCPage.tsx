@@ -17,6 +17,7 @@ import GridWorld from '@/components/rl/GridWorld';
 import LineChart from '@/components/LineChart';
 import ConceptAccordion from '@/components/ConceptAccordion';
 import SeedControl from '@/components/SeedControl';
+import { usePersistentState } from '@/hooks/usePersistentState';
 import { mulberry32 } from '@/lib/rl/stochasticApproximation';
 import {
   DEFAULT_CONFIG,
@@ -42,7 +43,7 @@ export default function Chapter05OffPolicyMCPage() {
   const [episodesPerPair, setEpisodesPerPair] = useState(20);
   const [horizonT, setHorizonT] = useState(30);
   const [type, setType] = useState<EstimateType>('ordinary');
-  const [seed, setSeed] = useState(1);
+  const [seed, setSeed] = usePersistentState('ch05.offpolicy.seed', 1);
   const [result, setResult] = useState<{
     qValues: number[][];
     qHistory: number[][][];

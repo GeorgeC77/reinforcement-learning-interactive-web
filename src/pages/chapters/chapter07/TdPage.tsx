@@ -173,6 +173,7 @@ export default function Chapter07TdPage() {
           { key: 'qlearning', label: 'Q-learning', category: 'main' },
         ]}
         defaultAlgorithm="td0"
+        persistKey="ch07.td"
       />
 
       <InteractiveDemo title="TD 统一视角">

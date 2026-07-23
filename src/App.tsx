@@ -1,54 +1,59 @@
+import { lazy } from 'react';
 import { HashRouter, Routes, Route } from 'react-router-dom';
 import Layout from './components/Layout';
 import HomePage from './pages/HomePage';
 
+// Chapter pages are lazy-loaded so the initial bundle stays small and each
+// chapter is fetched on demand. Shared code (React, KaTeX, charts) is split
+// into vendor chunks by Vite/Rollup for caching.
+
 // Chapter 1: Basic Concepts
-import Chapter01OverviewPage from './pages/chapters/chapter01/OverviewPage';
-import Chapter01MdpPage from './pages/chapters/chapter01/MdpPage';
-import Chapter01PolicyPage from './pages/chapters/chapter01/PolicyPage';
-import Chapter01RewardPage from './pages/chapters/chapter01/RewardPage';
-import Chapter01ReturnsPage from './pages/chapters/chapter01/ReturnsPage';
+const Chapter01OverviewPage = lazy(() => import('./pages/chapters/chapter01/OverviewPage'));
+const Chapter01MdpPage = lazy(() => import('./pages/chapters/chapter01/MdpPage'));
+const Chapter01PolicyPage = lazy(() => import('./pages/chapters/chapter01/PolicyPage'));
+const Chapter01RewardPage = lazy(() => import('./pages/chapters/chapter01/RewardPage'));
+const Chapter01ReturnsPage = lazy(() => import('./pages/chapters/chapter01/ReturnsPage'));
 
 // Chapter 2: State Values and Bellman Equation
-import Chapter02OverviewPage from './pages/chapters/chapter02/OverviewPage';
-import Chapter02BellmanPage from './pages/chapters/chapter02/BellmanPage';
-import Chapter02StateValuesPage from './pages/chapters/chapter02/StateValuesPage';
-import Chapter02ActionValuesPage from './pages/chapters/chapter02/ActionValuesPage';
+const Chapter02OverviewPage = lazy(() => import('./pages/chapters/chapter02/OverviewPage'));
+const Chapter02BellmanPage = lazy(() => import('./pages/chapters/chapter02/BellmanPage'));
+const Chapter02StateValuesPage = lazy(() => import('./pages/chapters/chapter02/StateValuesPage'));
+const Chapter02ActionValuesPage = lazy(() => import('./pages/chapters/chapter02/ActionValuesPage'));
 
 // Chapter 3: Bellman Optimality Equation
-import Chapter03OverviewPage from './pages/chapters/chapter03/OverviewPage';
-import Chapter03BoePage from './pages/chapters/chapter03/BoePage';
+const Chapter03OverviewPage = lazy(() => import('./pages/chapters/chapter03/OverviewPage'));
+const Chapter03BoePage = lazy(() => import('./pages/chapters/chapter03/BoePage'));
 
 // Chapter 4: Value Iteration & Policy Iteration
-import Chapter04OverviewPage from './pages/chapters/chapter04/OverviewPage';
-import Chapter04AlgorithmsPage from './pages/chapters/chapter04/AlgorithmsPage';
-import Chapter04ConvergencePage from './pages/chapters/chapter04/ConvergencePage';
+const Chapter04OverviewPage = lazy(() => import('./pages/chapters/chapter04/OverviewPage'));
+const Chapter04AlgorithmsPage = lazy(() => import('./pages/chapters/chapter04/AlgorithmsPage'));
+const Chapter04ConvergencePage = lazy(() => import('./pages/chapters/chapter04/ConvergencePage'));
 
 // Chapter 5: Monte Carlo Methods
-import Chapter05OverviewPage from './pages/chapters/chapter05/OverviewPage';
-import Chapter05MonteCarloPage from './pages/chapters/chapter05/MonteCarloPage';
-import Chapter05OffPolicyMCPage from './pages/chapters/chapter05/OffPolicyMCPage';
+const Chapter05OverviewPage = lazy(() => import('./pages/chapters/chapter05/OverviewPage'));
+const Chapter05MonteCarloPage = lazy(() => import('./pages/chapters/chapter05/MonteCarloPage'));
+const Chapter05OffPolicyMCPage = lazy(() => import('./pages/chapters/chapter05/OffPolicyMCPage'));
 
 // Chapter 6: Stochastic Approximation
-import Chapter06OverviewPage from './pages/chapters/chapter06/OverviewPage';
-import Chapter06SaPage from './pages/chapters/chapter06/SaPage';
+const Chapter06OverviewPage = lazy(() => import('./pages/chapters/chapter06/OverviewPage'));
+const Chapter06SaPage = lazy(() => import('./pages/chapters/chapter06/SaPage'));
 
 // Chapter 7: Temporal-Difference Methods
-import Chapter07OverviewPage from './pages/chapters/chapter07/OverviewPage';
-import Chapter07TdPage from './pages/chapters/chapter07/TdPage';
-import Chapter07TdExtensionsPage from './pages/chapters/chapter07/TdExtensionsPage';
+const Chapter07OverviewPage = lazy(() => import('./pages/chapters/chapter07/OverviewPage'));
+const Chapter07TdPage = lazy(() => import('./pages/chapters/chapter07/TdPage'));
+const Chapter07TdExtensionsPage = lazy(() => import('./pages/chapters/chapter07/TdExtensionsPage'));
 
 // Chapter 8: Value Function Methods
-import Chapter08OverviewPage from './pages/chapters/chapter08/OverviewPage';
-import Chapter08FaPage from './pages/chapters/chapter08/FaPage';
+const Chapter08OverviewPage = lazy(() => import('./pages/chapters/chapter08/OverviewPage'));
+const Chapter08FaPage = lazy(() => import('./pages/chapters/chapter08/FaPage'));
 
 // Chapter 9: Policy Gradient Methods
-import Chapter09OverviewPage from './pages/chapters/chapter09/OverviewPage';
-import Chapter09PgPage from './pages/chapters/chapter09/PgPage';
+const Chapter09OverviewPage = lazy(() => import('./pages/chapters/chapter09/OverviewPage'));
+const Chapter09PgPage = lazy(() => import('./pages/chapters/chapter09/PgPage'));
 
 // Chapter 10: Actor-Critic Methods
-import Chapter10OverviewPage from './pages/chapters/chapter10/OverviewPage';
-import Chapter10AcPage from './pages/chapters/chapter10/AcPage';
+const Chapter10OverviewPage = lazy(() => import('./pages/chapters/chapter10/OverviewPage'));
+const Chapter10AcPage = lazy(() => import('./pages/chapters/chapter10/AcPage'));
 
 function App() {
   return (

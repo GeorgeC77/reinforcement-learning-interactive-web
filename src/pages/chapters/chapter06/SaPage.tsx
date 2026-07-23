@@ -34,6 +34,7 @@ import {
   type GridWorldConfig,
   isTerminal,
 } from '@/lib/rl/gridworld';
+import { usePersistentState } from '@/hooks/usePersistentState';
 import {
   mulberry32,
   generateNormalSamples,
@@ -186,7 +187,7 @@ export default function Chapter06SaPage() {
 
 // ------------------- Tab 1: Batch vs Incremental Mean -------------------
 function BatchIncrementalMeanDemo() {
-  const [seed, setSeed] = useState(1);
+  const [seed, setSeed] = usePersistentState('ch06.batch.seed', 1);
   const [trueMean, setTrueMean] = useState(2);
   const [std, setStd] = useState(1);
   const [totalSamples, setTotalSamples] = useState(50);
@@ -271,7 +272,7 @@ function BatchIncrementalMeanDemo() {
 
 // ------------------- Tab 2: Robbins-Monro -------------------
 function RobbinsMonroDemo() {
-  const [seed, setSeed] = useState(1);
+  const [seed, setSeed] = usePersistentState('ch06.rm.seed', 1);
   const [wStar, setWStar] = useState(3);
   const [initialW, setInitialW] = useState(0);
   const [power, setPower] = useState(0.75);
@@ -473,7 +474,7 @@ function StepSizeConditionDemo() {
 
 // ------------------- Tab 4: BGD / MBGD / SGD -------------------
 function GDDemo() {
-  const [seed, setSeed] = useState(1);
+  const [seed, setSeed] = usePersistentState('ch06.gd.seed', 1);
   const [trueMean, setTrueMean] = useState(2);
   const [std, setStd] = useState(1);
   const [n, setN] = useState(100);
@@ -735,7 +736,7 @@ function TDBridgeDemo() {
   const [policyPreset, setPolicyPreset] = useState<PolicyPreset>('goal');
   const [customActions, setCustomActions] = useState<Action[]>([...CUSTOM_INITIAL]);
   const [alpha, setAlpha] = useState(0.2);
-  const [seed, setSeed] = useState(1);
+  const [seed, setSeed] = usePersistentState('ch06.bridge.seed', 1);
   const [v, setV] = useState<number[]>(() => new Array(DEFAULT_CONFIG.rows * DEFAULT_CONFIG.cols).fill(0));
   const [currentState, setCurrentState] = useState(DEFAULT_CONFIG.startState);
   const [stepCount, setStepCount] = useState(0);
@@ -912,7 +913,7 @@ function DvoretzkyDemo() {
   const [steps, setSteps] = useState(100);
   const [initialDelta, setInitialDelta] = useState(1);
   const [noiseStd, setNoiseStd] = useState(0.5);
-  const [seed, setSeed] = useState(1);
+  const [seed, setSeed] = usePersistentState('ch06.dvoretzky.seed', 1);
   const [showProof, setShowProof] = useState(false);
 
   const alphas = useMemo(() => powerStepSizes(steps, alphaPower), [steps, alphaPower]);
