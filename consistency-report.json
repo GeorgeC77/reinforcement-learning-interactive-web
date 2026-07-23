@@ -3,7 +3,7 @@
   "warnings": [
     {
       "file": "src\\pages\\chapters\\chapter05\\OverviewPage.tsx",
-      "line": 36,
+      "line": 37,
       "message": "“完整回合” wording found; verify it is not used in a continuing setting"
     },
     {
@@ -18,35 +18,28 @@
       "line": 368,
       "message": "Unseeded Math.random() in sampleAction",
       "function": "sampleAction",
-      "reason": "shared unseeded helper for legacy chapter interactions"
+      "reason": "unseeded fallback of the shared sampling helper; UI demos pass a seeded rng"
     },
     {
       "file": "src\\lib\\rl\\gridworld.ts",
-      "line": 774,
+      "line": 779,
       "message": "Unseeded Math.random() in shuffleInPlace",
       "function": "shuffleInPlace",
-      "reason": "internal helper used only by asyncValueIteration for random subset ordering"
+      "reason": "internal helper of asyncValueIteration; accepts an optional seeded rng and only falls back to Math.random without one"
     },
     {
       "file": "src\\lib\\rl\\gridworld.ts",
-      "line": 804,
+      "line": 807,
       "message": "Unseeded Math.random() in asyncValueIteration",
       "function": "asyncValueIteration",
-      "reason": "legacy unseeded interactive visualization helper"
+      "reason": "accepts an optional seeded rng; unseeded Math.random only when the caller does not provide one"
     },
     {
       "file": "src\\lib\\rl\\gridworld.ts",
-      "line": 2014,
+      "line": 2026,
       "message": "Unseeded Math.random() in runMCExploringStartsEpisodes",
       "function": "runMCExploringStartsEpisodes",
-      "reason": "legacy unseeded MC exploring-starts helper used by chapter 5 UI"
-    },
-    {
-      "file": "src\\lib\\rl\\gridworld.ts",
-      "line": 2015,
-      "message": "Unseeded Math.random() in runMCExploringStartsEpisodes",
-      "function": "runMCExploringStartsEpisodes",
-      "reason": "legacy unseeded MC exploring-starts helper used by chapter 5 UI"
+      "reason": "accepts an optional seeded rng; unseeded Math.random only when the caller does not provide one"
     }
   ],
   "routeCount": 29,

@@ -511,14 +511,20 @@ export function generateTrajectory(
   policy: Policy,
   config: GridWorldConfig,
   maxSteps: number = 20,
-  startAction?: Action
+  startAction?: Action,
+  rng?: () => number
 ): { state: number; action: Action; reward: number; nextState: number }[] {
   const traj: { state: number; action: Action; reward: number; nextState: number }[] = [];
   let state = startState;
 
   for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
     if (isTerminal(state, config)) break;
-    const action = stepIdx === 0 && startAction !== undefined ? startAction : sampleAction(policy[state]);
+    const action =
+      stepIdx === 0 && startAction !== undefined
+        ? startAction
+        : rng
+          ? sampleActionWithRng(policy[state], rng)
+          : sampleAction(policy[state]);
     const result = step(state, action, config);
     traj.push({ state, action, reward: result.reward, nextState: result.nextState });
     state = result.nextState;
@@ -769,9 +775,10 @@ export function gaussSeidelValueIteration(
   return { values, policies };
 }
 
-function shuffleInPlace<T>(arr: T[]): T[] {
+function shuffleInPlace<T>(arr: T[], rng?: () => number): T[] {
+  const rand = rng ?? Math.random;
   for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = Math.floor(rand() * (i + 1));
     [arr[i], arr[j]] = [arr[j], arr[i]];
   }
   return arr;
@@ -789,26 +796,28 @@ export function asyncValueIteration(
   config: GridWorldConfig,
   maxSteps: number = 100,
   tolerance: number = 1e-6,
-  mode: 'single-random' | 'single-sequential' | 'subset-random' = 'single-random'
+  mode: 'single-random' | 'single-sequential' | 'subset-random' = 'single-random',
+  rng?: () => number
 ): { values: StateValues[]; policies: Policy[]; updatedStates: number[] } {
   const numStates = config.rows * config.cols;
   let v = new Array(numStates).fill(0);
   const values: StateValues[] = [v];
   const policies: Policy[] = [];
   const updatedStates: number[] = [];
+  const rand = rng ?? Math.random;
 
   let seqIndex = 0;
   for (let step = 0; step < maxSteps; step++) {
     let statesToUpdate: number[];
     if (mode === 'single-random') {
-      statesToUpdate = [Math.floor(Math.random() * numStates)];
+      statesToUpdate = [Math.floor(rand() * numStates)];
     } else if (mode === 'single-sequential') {
       statesToUpdate = [seqIndex % numStates];
       seqIndex++;
     } else {
       const subsetSize = Math.max(1, Math.ceil(numStates / 3));
       const pool = Array.from({ length: numStates }, (_, i) => i);
-      shuffleInPlace(pool);
+      shuffleInPlace(pool, rng);
       statesToUpdate = pool.slice(0, subsetSize);
     }
 
@@ -882,7 +891,8 @@ export function estimateActionValuesMC(
   policy: Policy,
   config: GridWorldConfig,
   numEpisodes: number = 50,
-  maxSteps: number = 30 // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
+  maxSteps: number = 30, // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
+  rng?: () => number
 ): { policy: Policy; qValues: number[][]; returns: number[][][] } {
   const numStates = config.rows * config.cols;
   const returns: number[][][] = Array.from({ length: numStates }, () =>
@@ -892,7 +902,7 @@ export function estimateActionValuesMC(
   for (let s = 0; s < numStates; s++) {
     for (let a = 0; a < 5; a++) {
       for (let ep = 0; ep < numEpisodes; ep++) {
-        const traj = generateTrajectoryFrom(s, a as Action, policy, config, maxSteps);
+        const traj = generateTrajectoryFrom(s, a as Action, policy, config, maxSteps, rng);
         const g = discountedReturn(traj, config.gamma);
         returns[s][a].push(g);
       }
@@ -915,7 +925,8 @@ function generateTrajectoryFrom(
   startAction: Action,
   policy: Policy,
   config: GridWorldConfig,
-  horizonT: number
+  horizonT: number,
+  rng?: () => number
 ): { reward: number }[] {
   const traj: { reward: number }[] = [];
   // first transition uses 1 step of the horizon
@@ -925,7 +936,7 @@ function generateTrajectoryFrom(
 
   for (let stepIdx = 1; stepIdx < horizonT; stepIdx++) {
     if (isTerminal(state, config)) break;
-    const action = sampleAction(policy[state]);
+    const action = rng ? sampleActionWithRng(policy[state], rng) : sampleAction(policy[state]);
     const result = step(state, action, config);
     traj.push({ reward: result.reward });
     state = result.nextState;
@@ -944,14 +955,15 @@ export function estimateStateValueMC(
   policy: Policy,
   config: GridWorldConfig,
   numEpisodes: number,
-  maxSteps: number = 30 // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
+  maxSteps: number = 30, // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
+  rng?: () => number
 ): { estimates: number[]; returns: number[] } {
   const estimates: number[] = [];
   const returns: number[] = [];
   let sum = 0;
 
   for (let ep = 0; ep < numEpisodes; ep++) {
-    const traj = generateTrajectory(startState, policy, config, maxSteps);
+    const traj = generateTrajectory(startState, policy, config, maxSteps, undefined, rng);
     const g = discountedReturn(traj, config.gamma);
     sum += g;
     returns.push(g);
@@ -1843,7 +1855,8 @@ export function tdLambdaPrediction(
 export function mcBasic(
   config: GridWorldConfig,
   numEpisodesPerPair: number = 20,
-  maxSteps: number = 30 // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
+  maxSteps: number = 30, // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
+  rng?: () => number
 ): { policy: Policy; qValues: number[][]; returns: number[][][] } {
   const numStates = config.rows * config.cols;
   const numActions = 5;
@@ -1856,7 +1869,7 @@ export function mcBasic(
   for (let s = 0; s < numStates; s++) {
     for (let a = 0; a < numActions; a++) {
       for (let ep = 0; ep < numEpisodesPerPair; ep++) {
-        const traj = generateTrajectory(s, behaviorPolicy, config, maxSteps, a as Action);
+        const traj = generateTrajectory(s, behaviorPolicy, config, maxSteps, a as Action, rng);
         const g = discountedReturn(traj, config.gamma);
         returns[s][a].push(g);
       }
@@ -1900,7 +1913,8 @@ export function mcBasicPolicyIteration(
   episodesPerPair: number = 20,
   maxSteps: number = 30, // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
   maxPolicyIterations: number = 20,
-  initialPolicy?: Policy
+  initialPolicy?: Policy,
+  rng?: () => number
 ): {
   iterations: MCBasicIteration[];
   finalPolicy: Policy;
@@ -1914,7 +1928,7 @@ export function mcBasicPolicyIteration(
 
   for (let k = 0; k < maxPolicyIterations; k++) {
     // Step 1: MC policy evaluation of current policy
-    const { qValues } = estimateActionValuesMC(policy, config, episodesPerPair, maxSteps);
+    const { qValues } = estimateActionValuesMC(policy, config, episodesPerPair, maxSteps, rng);
 
     // Step 2: deterministic greedy policy improvement
     const newPolicy = deterministicGreedyPolicy(qValues, config);
@@ -1998,7 +2012,8 @@ export function runMCExploringStartsEpisodes(
   config: GridWorldConfig,
   additionalEpisodes: number,
   maxSteps: number = 30, // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
-  visitMode: 'first-visit' | 'every-visit' = 'first-visit'
+  visitMode: 'first-visit' | 'every-visit' = 'first-visit',
+  rng?: () => number
 ): MCLearnerState {
   const numStates = config.rows * config.cols;
   const numActions = 5;
@@ -2008,13 +2023,14 @@ export function runMCExploringStartsEpisodes(
   const visitCount = learnerState.visitCount.map((row) => [...row]);
   let episodesCompleted = learnerState.episodesCompleted;
   let lastTrajectory = learnerState.lastTrajectory;
+  const rand = rng ?? Math.random;
 
   for (let ep = 0; ep < additionalEpisodes; ep++) {
     episodesCompleted++;
-    const startState = Math.floor(Math.random() * numStates);
-    const startAction = Math.floor(Math.random() * numActions) as Action;
+    const startState = Math.floor(rand() * numStates);
+    const startAction = Math.floor(rand() * numActions) as Action;
     const policy = greedyPolicy(q);
-    const traj = generateTrajectory(startState, policy, config, maxSteps, startAction);
+    const traj = generateTrajectory(startState, policy, config, maxSteps, startAction, rng);
     lastTrajectory = traj;
 
     const visited = new Set<string>();
@@ -2055,7 +2071,8 @@ export function runMCEpsilonGreedyEpisodes(
   maxSteps: number = 30, // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
   epsilonSchedule: EpsilonSchedule = 'fixed',
   baseEpsilon: number = 0.3,
-  visitMode: 'first-visit' | 'every-visit' = 'first-visit'
+  visitMode: 'first-visit' | 'every-visit' = 'first-visit',
+  rng?: () => number
 ): MCLearnerState {
   const q = learnerState.q.map((row) => [...row]);
   const returnsSum = learnerState.returnsSum.map((row) => [...row]);
@@ -2071,7 +2088,7 @@ export function runMCEpsilonGreedyEpisodes(
     // No exploring starts: start from config.startState
     const startState = config.startState;
     const policy = epsilonGreedyPolicy(q, currentEpsilon);
-    const traj = generateTrajectory(startState, policy, config, maxSteps);
+    const traj = generateTrajectory(startState, policy, config, maxSteps, undefined, rng);
     lastTrajectory = traj;
 
     const visited = new Set<string>();
@@ -2202,7 +2219,8 @@ export function offPolicyMCEvaluation(
   config: GridWorldConfig,
   numEpisodesPerPair: number = 20,
   type: 'ordinary' | 'weighted' = 'ordinary',
-  maxSteps: number = 30 // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
+  maxSteps: number = 30, // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
+  rng?: () => number
 ): {
   qValues: number[][];
   qHistory: number[][][];
@@ -2224,7 +2242,7 @@ export function offPolicyMCEvaluation(
       if (type === 'ordinary') {
         const estimates: number[] = [];
         for (let ep = 0; ep < numEpisodesPerPair; ep++) {
-          const traj = generateTrajectory(s, behaviorPolicy, config, maxSteps, a as Action);
+          const traj = generateTrajectory(s, behaviorPolicy, config, maxSteps, a as Action, rng);
           if (s === 0 && a === 0 && ep === 0) lastTrajectory = traj;
           const rho = computeImportanceSamplingRatio(traj, targetPolicy, behaviorPolicy, 1);
           if (s === 0 && a === 0 && ep === 0) lastRho = rho;
@@ -2239,7 +2257,7 @@ export function offPolicyMCEvaluation(
         let numerator = 0;
         let denominator = 0;
         for (let ep = 0; ep < numEpisodesPerPair; ep++) {
-          const traj = generateTrajectory(s, behaviorPolicy, config, maxSteps, a as Action);
+          const traj = generateTrajectory(s, behaviorPolicy, config, maxSteps, a as Action, rng);
           if (s === 0 && a === 0 && ep === 0) lastTrajectory = traj;
           const rho = computeImportanceSamplingRatio(traj, targetPolicy, behaviorPolicy, 1);
           if (s === 0 && a === 0 && ep === 0) lastRho = rho;

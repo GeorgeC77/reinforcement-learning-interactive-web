@@ -16,6 +16,8 @@ import InteractiveDemo from '@/components/InteractiveDemo';
 import GridWorld from '@/components/rl/GridWorld';
 import LineChart from '@/components/LineChart';
 import ConceptAccordion from '@/components/ConceptAccordion';
+import SeedControl from '@/components/SeedControl';
+import { mulberry32 } from '@/lib/rl/stochasticApproximation';
 import {
   DEFAULT_CONFIG,
   ACTION_NAMES,
@@ -40,6 +42,7 @@ export default function Chapter05OffPolicyMCPage() {
   const [episodesPerPair, setEpisodesPerPair] = useState(20);
   const [horizonT, setHorizonT] = useState(30);
   const [type, setType] = useState<EstimateType>('ordinary');
+  const [seed, setSeed] = useState(1);
   const [result, setResult] = useState<{
     qValues: number[][];
     qHistory: number[][][];
@@ -58,7 +61,7 @@ export default function Chapter05OffPolicyMCPage() {
   }, [targetPolicy, epsilon]);
 
   function run() {
-    const res = offPolicyMCEvaluation(targetPolicy, behaviorPolicy, config, episodesPerPair, type, horizonT);
+    const res = offPolicyMCEvaluation(targetPolicy, behaviorPolicy, config, episodesPerPair, type, horizonT, mulberry32(seed));
     setResult(res);
   }
 
@@ -231,6 +234,7 @@ export default function Chapter05OffPolicyMCPage() {
                     </SelectContent>
                   </Select>
                 </div>
+                <SeedControl seed={seed} onChange={setSeed} />
                 <Button size="sm" onClick={run} className="w-full bg-blue-600 hover:bg-blue-700">
                   运行异策略 MC
                 </Button>

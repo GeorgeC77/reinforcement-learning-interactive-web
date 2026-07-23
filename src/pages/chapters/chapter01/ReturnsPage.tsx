@@ -10,6 +10,8 @@ import GridWorld from '@/components/rl/GridWorld';
 import AlgorithmPlayer from '@/components/AlgorithmPlayer';
 import TrajectoryViewer from '@/components/TrajectoryViewer';
 import LineChart from '@/components/LineChart';
+import SeedControl from '@/components/SeedControl';
+import { mulberry32 } from '@/lib/rl/stochasticApproximation';
 import {
   DEFAULT_CONFIG,
   ACTION_NAMES,
@@ -19,6 +21,7 @@ import {
   step,
   isTerminal,
   discountedReturn,
+  sampleActionWithRng,
 } from '@/lib/rl/gridworld';
 
 export default function Chapter01ReturnsPage() {
@@ -34,11 +37,13 @@ export default function Chapter01ReturnsPage() {
   const [currentStep, setCurrentStep] = useState(0);
   const [absorbing, setAbsorbing] = useState(false);
   const [markovGuess, setMarkovGuess] = useState<number | null>(null);
+  const [seed, setSeed] = useState(1);
 
   function runEpisode() {
     let state = startState;
     const traj: { state: number; action: Action; reward: number; nextState: number }[] = [];
     const maxSteps = 15;
+    const rng = mulberry32(seed);
 
     for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
       if (isTerminal(state, config)) {
@@ -51,7 +56,7 @@ export default function Chapter01ReturnsPage() {
           break;
         }
       } else {
-        const action = sampleAction(policy[state]) as Action;
+        const action = sampleActionWithRng(policy[state], rng) as Action;
         const result = step(state, action, config);
         traj.push({ state, action, reward: result.reward, nextState: result.nextState });
         state = result.nextState;
@@ -232,6 +237,8 @@ export default function Chapter01ReturnsPage() {
                   />
                 </div>
 
+                <SeedControl seed={seed} onChange={setSeed} />
+
                 <div className="grid grid-cols-2 gap-2">
                   <Button size="sm" onClick={runEpisode} className="bg-emerald-600 hover:bg-emerald-700">
                     <Play className="w-4 h-4 mr-1" />
@@ -377,14 +384,4 @@ export default function Chapter01ReturnsPage() {
       </section>
     </div>
   );
-}
-
-function sampleAction(probs: number[]): number {
-  const r = Math.random();
-  let cum = 0;
-  for (let i = 0; i < probs.length; i++) {
-    cum += probs[i];
-    if (r <= cum) return i;
-  }
-  return probs.length - 1;
 }

@@ -17,6 +17,8 @@ import GridWorld from '@/components/rl/GridWorld';
 import AlgorithmPlayer from '@/components/AlgorithmPlayer';
 import LineChart from '@/components/LineChart';
 import ConceptAccordion from '@/components/ConceptAccordion';
+import SeedControl from '@/components/SeedControl';
+import { mulberry32 } from '@/lib/rl/stochasticApproximation';
 import {
   DEFAULT_CONFIG,
   valueIterationConvergence,
@@ -300,10 +302,11 @@ function GaussSeidelTab({ config }: { config: typeof DEFAULT_CONFIG }) {
 function AsyncTab({ config }: { config: typeof DEFAULT_CONFIG }) {
   const [mode, setMode] = useState<'single-random' | 'single-sequential'>('single-random');
   const [step, setStep] = useState(0);
+  const [seed, setSeed] = useState(1);
 
   const result = useMemo(() => {
-    return asyncValueIteration(config, 100, 1e-6, mode);
-  }, [config, mode]);
+    return asyncValueIteration(config, 100, 1e-6, mode, mulberry32(seed));
+  }, [config, mode, seed]);
 
   const maxStep = result.values.length - 1;
   const currentValues = result.values[Math.min(step, maxStep)];
@@ -357,6 +360,16 @@ function AsyncTab({ config }: { config: typeof DEFAULT_CONFIG }) {
               <AlgorithmPlayer maxStep={maxStep} currentStep={step} onStepChange={setStep} />
             </CardContent>
           </Card>
+          {mode === 'single-random' && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base">可复现性</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <SeedControl seed={seed} onChange={(v) => { setSeed(v); setStep(0); }} />
+              </CardContent>
+            </Card>
+          )}
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-base">说明</CardTitle>

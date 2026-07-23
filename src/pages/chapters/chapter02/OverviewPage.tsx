@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { BookOpen, Calculator, ArrowRight, ShieldAlert, BarChart3, MousePointer2 } from 'lucide-react';
 import KaTeX from '@/components/KaTeX';
+import { Ch2Playground } from '../overview-playgrounds';
 
 export default function Chapter02OverviewPage() {
   return (
@@ -106,6 +107,9 @@ export default function Chapter02OverviewPage() {
           </div>
         </div>
       </section>
+
+      {/* Interactive preview */}
+      <Ch2Playground />
 
       <section className="flex flex-wrap justify-end gap-3">
         <Link

@@ -51,22 +51,22 @@ const allowedUnseededRandom: AllowlistEntry[] = [
   {
     file: 'src/lib/rl/gridworld.ts',
     function: 'sampleAction',
-    reason: 'shared unseeded helper for legacy chapter interactions',
+    reason: 'unseeded fallback of the shared sampling helper; UI demos pass a seeded rng',
   },
   {
     file: 'src/lib/rl/gridworld.ts',
     function: 'shuffleInPlace',
-    reason: 'internal helper used only by asyncValueIteration for random subset ordering',
+    reason: 'internal helper of asyncValueIteration; accepts an optional seeded rng and only falls back to Math.random without one',
   },
   {
     file: 'src/lib/rl/gridworld.ts',
     function: 'asyncValueIteration',
-    reason: 'legacy unseeded interactive visualization helper',
+    reason: 'accepts an optional seeded rng; unseeded Math.random only when the caller does not provide one',
   },
   {
     file: 'src/lib/rl/gridworld.ts',
     function: 'runMCExploringStartsEpisodes',
-    reason: 'legacy unseeded MC exploring-starts helper used by chapter 5 UI',
+    reason: 'accepts an optional seeded rng; unseeded Math.random only when the caller does not provide one',
   },
 ];
 

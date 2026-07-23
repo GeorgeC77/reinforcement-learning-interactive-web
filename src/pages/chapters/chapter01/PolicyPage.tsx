@@ -9,6 +9,8 @@ import InteractiveDemo from '@/components/InteractiveDemo';
 import GridWorld from '@/components/rl/GridWorld';
 import AlgorithmPlayer from '@/components/AlgorithmPlayer';
 import TrajectoryViewer from '@/components/TrajectoryViewer';
+import SeedControl from '@/components/SeedControl';
+import { mulberry32 } from '@/lib/rl/stochasticApproximation';
 import {
   DEFAULT_CONFIG,
   ACTION_NAMES,
@@ -18,6 +20,7 @@ import {
   step,
   isTerminal,
   discountedReturn,
+  sampleActionWithRng,
 } from '@/lib/rl/gridworld';
 
 export default function Chapter01PolicyPage() {
@@ -32,6 +35,7 @@ export default function Chapter01PolicyPage() {
   >([]);
   const [currentStep, setCurrentStep] = useState(0);
   const [message, setMessage] = useState('编辑策略后运行一回合，观察生成的轨迹与回报。');
+  const [seed, setSeed] = useState(1);
 
   const returnValue = useMemo(
     () => (trajectory.length > 0 ? discountedReturn(trajectory, config.gamma) : 0),
@@ -99,10 +103,11 @@ export default function Chapter01PolicyPage() {
     let state = startState;
     const traj: { state: number; action: Action; reward: number; nextState: number }[] = [];
     const maxSteps = 15;
+    const rng = mulberry32(seed);
 
     for (let stepIdx = 0; stepIdx < maxSteps; stepIdx++) {
       if (isTerminal(state, config)) break;
-      const action = sampleAction(policy[state]) as Action;
+      const action = sampleActionWithRng(policy[state], rng) as Action;
       const result = step(state, action, config);
       traj.push({ state, action, reward: result.reward, nextState: result.nextState });
       state = result.nextState;
@@ -279,6 +284,8 @@ export default function Chapter01PolicyPage() {
                   </div>
                 </div>
 
+                <SeedControl seed={seed} onChange={setSeed} />
+
                 <div className="grid grid-cols-2 gap-2">
                   <Button onClick={runEpisode} size="sm" className="bg-indigo-600 hover:bg-indigo-700">
                     <Play className="w-4 h-4 mr-1" />
@@ -353,14 +360,4 @@ export default function Chapter01PolicyPage() {
       </section>
     </div>
   );
-}
-
-function sampleAction(probs: number[]): number {
-  const r = Math.random();
-  let cum = 0;
-  for (let i = 0; i < probs.length; i++) {
-    cum += probs[i];
-    if (r <= cum) return i;
-  }
-  return probs.length - 1;
 }

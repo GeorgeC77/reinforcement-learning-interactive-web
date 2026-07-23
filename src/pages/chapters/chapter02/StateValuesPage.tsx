@@ -8,6 +8,8 @@ import FormulaCard from '@/components/FormulaCard';
 import InteractiveDemo from '@/components/InteractiveDemo';
 import GridWorld from '@/components/rl/GridWorld';
 import LineChart from '@/components/LineChart';
+import SeedControl from '@/components/SeedControl';
+import { mulberry32 } from '@/lib/rl/stochasticApproximation';
 import {
   DEFAULT_CONFIG,
   type Action,
@@ -29,6 +31,7 @@ export default function Chapter02StateValuesPage() {
   const [mcStart, setMcStart] = useState(config.startState);
   const [mcEpisodes, setMcEpisodes] = useState(100);
   const [mcData, setMcData] = useState<{ episode: number; estimate: number; trueValue: number }[]>([]);
+  const [mcSeed, setMcSeed] = useState(1);
 
   const valuesA = useMemo(() => solveStateValues(policyA, config), [policyA, config]);
   const valuesB = useMemo(() => solveStateValues(policyB, config), [policyB, config]);
@@ -38,7 +41,7 @@ export default function Chapter02StateValuesPage() {
   const trueStartValue = selectedValues[mcStart];
 
   function runMC() {
-    const { estimates } = estimateStateValueMC(mcStart, selectedPolicy, config, mcEpisodes, 30);
+    const { estimates } = estimateStateValueMC(mcStart, selectedPolicy, config, mcEpisodes, 30, mulberry32(mcSeed)); // CONSISTENCY_ALLOW_DEFAULT_HORIZON: default value
     setMcData(
       estimates.map((estimate, i) => ({
         episode: i + 1,
@@ -254,6 +257,8 @@ export default function Chapter02StateValuesPage() {
                     onValueChange={([v]) => setMcEpisodes(v)}
                   />
                 </div>
+
+                <SeedControl seed={mcSeed} onChange={setMcSeed} />
 
                 <div className="flex gap-2">
                   <Button onClick={runMC} size="sm" className="bg-blue-600 hover:bg-blue-700">

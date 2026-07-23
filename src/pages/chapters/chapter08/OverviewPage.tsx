@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import { BookOpen, Brain, Layers, ArrowRight, ShieldAlert } from 'lucide-react';
 import ConceptCard from '@/components/ConceptCard';
 import KaTeX from '@/components/KaTeX';
+import { Ch8Playground } from '../overview-playgrounds';
 
 export default function Chapter08OverviewPage() {
   return (
@@ -66,6 +67,9 @@ export default function Chapter08OverviewPage() {
           </div>
         </div>
       </section>
+
+      {/* Interactive preview */}
+      <Ch8Playground />
 
       <section className="flex justify-end">
         <Link

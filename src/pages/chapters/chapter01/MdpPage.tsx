@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import { Grid3x3, Play, RotateCcw, Info, ShieldAlert, Shuffle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
@@ -8,6 +8,8 @@ import KaTeX from '@/components/KaTeX';
 import FormulaCard from '@/components/FormulaCard';
 import InteractiveDemo from '@/components/InteractiveDemo';
 import GridWorld from '@/components/rl/GridWorld';
+import SeedControl from '@/components/SeedControl';
+import { mulberry32 } from '@/lib/rl/stochasticApproximation';
 import {
   DEFAULT_CONFIG,
   ACTION_NAMES,
@@ -21,6 +23,7 @@ import {
   isTerminal,
   transitionTable,
   stochasticTransition,
+  sampleActionWithRng,
 } from '@/lib/rl/gridworld';
 
 export default function Chapter01MdpPage() {
@@ -34,6 +37,13 @@ export default function Chapter01MdpPage() {
   const [message, setMessage] = useState('点击网格中的状态查看动作与转移细节，或点击「运行一回合」');
   const [stochastic, setStochastic] = useState(false);
   const [slip, setSlip] = useState(0.2);
+  const [seed, setSeed] = useState(1);
+  const rngRef = useRef<() => number>(mulberry32(1));
+  const rngSeedRef = useRef(1);
+  if (seed !== rngSeedRef.current) {
+    rngSeedRef.current = seed;
+    rngRef.current = mulberry32(seed);
+  }
 
   const selectedInfo = useMemo(() => {
     if (selectedState === null) return null;
@@ -56,9 +66,9 @@ export default function Chapter01MdpPage() {
     for (let stepIdx = 0; stepIdx < MAX_EPISODE_STEPS; stepIdx++) {
       if (isTerminal(state, config)) break;
       const actionDist = policy[state];
-      const action = sampleAction(actionDist) as Action;
+      const action = sampleActionWithRng(actionDist, rngRef.current) as Action;
       const result = stochastic
-        ? sampleStochastic(state, action, config, slip)
+        ? sampleStochastic(state, action, config, slip, rngRef.current)
         : step(state, action, config);
       const sNext = result.nextState;
       const r = result.reward;
@@ -90,10 +100,10 @@ export default function Chapter01MdpPage() {
       return;
     }
     const actionDist = policy[agentState];
-    const action = sampleAction(actionDist) as Action;
+    const action = sampleActionWithRng(actionDist, rngRef.current) as Action;
     const intended = step(agentState, action, config);
     const result = stochastic
-      ? sampleStochastic(agentState, action, config, slip)
+      ? sampleStochastic(agentState, action, config, slip, rngRef.current)
       : intended;
     const sNext = result.nextState;
     const r = result.reward;
@@ -361,6 +371,15 @@ export default function Chapter01MdpPage() {
               </CardContent>
             </Card>
 
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base">可复现性</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <SeedControl seed={seed} onChange={setSeed} />
+              </CardContent>
+            </Card>
+
             <div className="grid grid-cols-3 gap-2">
               <Button onClick={stepOnce} size="sm" variant="outline">
                 单步执行
@@ -395,23 +414,14 @@ export default function Chapter01MdpPage() {
   );
 }
 
-function sampleAction(probs: number[]): number {
-  const r = Math.random();
-  let cum = 0;
-  for (let i = 0; i < probs.length; i++) {
-    cum += probs[i];
-    if (r <= cum) return i;
-  }
-  return probs.length - 1;
-}
-
 function sampleStochastic(
   state: number,
   action: Action,
   config: GridWorldConfig,
-  slip: number
+  slip: number,
+  rng: () => number
 ): ReturnType<typeof step> {
-  if (Math.random() > slip) return step(state, action, config);
-  const randomAction = Math.floor(Math.random() * 5) as Action;
+  if (rng() > slip) return step(state, action, config);
+  const randomAction = Math.floor(rng() * 5) as Action;
   return step(state, randomAction, config);
 }

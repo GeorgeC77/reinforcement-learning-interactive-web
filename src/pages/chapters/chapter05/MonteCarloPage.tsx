@@ -12,6 +12,8 @@ import FormulaCard from '@/components/FormulaCard';
 import InteractiveDemo from '@/components/InteractiveDemo';
 import GridWorld from '@/components/rl/GridWorld';
 import LineChart from '@/components/LineChart';
+import SeedControl from '@/components/SeedControl';
+import { mulberry32 } from '@/lib/rl/stochasticApproximation';
 import {
   DEFAULT_CONFIG, ACTION_NAMES,
   type Policy,
@@ -74,16 +76,18 @@ function MCBasicDemo() {
   const [result, setResult] = useState<{type:'single-eval';q:number[][];counts:number[][];rmse:number;policy:Policy}|{type:'policy-iteration';iterations:MCBasicIteration[];finalPolicy:Policy;finalQ:number[][];finalQPolicy:Policy;rmse:number;stable:boolean}|null>(null);
   const [iterIndex, setIterIndex] = useState(0);
   const [showImproved, setShowImproved] = useState(false);
+  const [seed, setSeed] = useState(1);
 
   function run() {
+    const rng = mulberry32(seed);
     if (mode === 'single-eval') {
-      const { policy, qValues, returns } = mcBasic(config, episodesPerPair, horizonT);
+      const { policy, qValues, returns } = mcBasic(config, episodesPerPair, horizonT, rng);
       const counts = returns.map(s=>s.map(a=>a.length));
       const vTrue = solveStateValues(policy, config); const qTrue = computeQValues(vTrue, config);
       setResult({ type:'single-eval', q:qValues, counts, rmse:qTableRMSE(qValues,qTrue), policy });
       setShowImproved(false); setIterIndex(0);
     } else {
-      const { iterations, finalPolicy, finalQ, finalQPolicy } = mcBasicPolicyIteration(config, episodesPerPair, horizonT, 20);
+      const { iterations, finalPolicy, finalQ, finalQPolicy } = mcBasicPolicyIteration(config, episodesPerPair, horizonT, 20, undefined, rng);
       const vTrue = solveStateValues(finalQPolicy, config); const qTrue = computeQValues(vTrue, config);
       setResult({ type:'policy-iteration', iterations, finalPolicy, finalQ, finalQPolicy, rmse:qTableRMSE(finalQ,qTrue), stable:iterations[iterations.length-1]?.policyStable??false });
       setIterIndex(0);
@@ -153,6 +157,7 @@ function MCBasicDemo() {
               <Select value={mode} onValueChange={v=>setMode(v as 'single-eval'|'policy-iteration')}><SelectTrigger><SelectValue/></SelectTrigger><SelectContent><SelectItem value="policy-iteration">策略迭代（完整算法 5.1）</SelectItem><SelectItem value="single-eval">单步策略评估</SelectItem></SelectContent></Select></div>
             <div><div className="flex justify-between text-sm text-gray-700 mb-1"><span>每对 (s,a) 采样回合数</span><span className="font-mono">{episodesPerPair}</span></div><Slider value={[episodesPerPair]} min={1} max={100} step={1} onValueChange={([v])=>setEpisodesPerPair(v)}/></div>
             <div><label className="text-sm text-gray-700 block mb-1">轨迹长度 T</label><Select value={String(horizonT)} onValueChange={v=>setHorizonT(Number(v))}><SelectTrigger><SelectValue/></SelectTrigger><SelectContent>{HORIZON_OPTIONS.map(t=><SelectItem key={t} value={String(t)}>T={t}</SelectItem>)}</SelectContent></Select></div>
+            <SeedControl seed={seed} onChange={setSeed} />
             <Button size="sm" onClick={run} className="w-full bg-blue-600 hover:bg-blue-700">运行 MC Basic</Button>
           </CardContent></Card>
         {result && <Card><CardHeader className="pb-2"><CardTitle className="text-base">统计</CardTitle></CardHeader>
@@ -171,21 +176,34 @@ function MCExploringStartsDemo() {
   const qStar = useMemo(()=>estimateTrueActionValues(config),[config]);
   const [visitMode, setVisitMode] = useState<VisitMode>('first-visit');
   const [horizonT, setHorizonT] = useState(30);
+  const [seed, setSeed] = useState(1);
   const [learnerState, setLearnerState] = useState<MCLearnerState>(()=>createMCLearnerState(config));
   const [rmseHistory, setRmseHistory] = useState<LearningPoint[]>(()=>[{episode:0,rmse:qTableRMSE(createMCLearnerState(config).q,qStar)}]);
   const learnerRef = useRef(learnerState); learnerRef.current = learnerState;
+  const rngRef = useRef<() => number>(mulberry32(1));
+  const rngSeedRef = useRef(1);
 
   const policy = useMemo(()=>learnerState.policy,[learnerState]);
   const stateValues = useMemo(()=>policyWeightedStateValues(learnerState.q,policy),[learnerState,policy]);
 
+  // Changing the seed restarts training from scratch with the new stream.
+  if (seed !== rngSeedRef.current) {
+    rngSeedRef.current = seed;
+    rngRef.current = mulberry32(seed);
+    const init = createMCLearnerState(config);
+    setLearnerState(init);
+    setRmseHistory([{episode:0,rmse:qTableRMSE(init.q,qStar)}]);
+  }
+
   const runEpisodes = useCallback((n:number)=>{
-    const ns = runMCExploringStartsEpisodes(learnerRef.current,config,n,horizonT,visitMode);
+    const ns = runMCExploringStartsEpisodes(learnerRef.current,config,n,horizonT,visitMode,rngRef.current);
     setLearnerState(ns);
     setRmseHistory(prev=>[...prev,{episode:ns.episodesCompleted,rmse:qTableRMSE(ns.q,qStar)}]);
   },[config,qStar,visitMode,horizonT]);
 
   function reset() {
     const init = createMCLearnerState(config);
+    rngRef.current = mulberry32(seed);
     setLearnerState(init); setRmseHistory([{episode:0,rmse:qTableRMSE(init.q,qStar)}]);
   }
 
@@ -193,7 +211,8 @@ function MCExploringStartsDemo() {
     policy={policy} values={stateValues} episodeCount={learnerState.episodesCompleted}
     visitMode={visitMode} onVisitModeChange={setVisitMode} onRun={runEpisodes} onReset={reset}
     chartData={rmseHistory} lastTrajectory={learnerState.lastTrajectory}
-    horizonT={horizonT} onHorizonTChange={setHorizonT}/>);
+    horizonT={horizonT} onHorizonTChange={setHorizonT}
+    seed={seed} onSeedChange={setSeed}/>);
 }
 
 // ------------------- MC ε-Greedy -------------------
@@ -204,22 +223,35 @@ function MCEpsilonGreedyDemo() {
   const [schedule, setSchedule] = useState<EpsilonSchedule>('fixed');
   const [visitMode, setVisitMode] = useState<VisitMode>('first-visit');
   const [horizonT, setHorizonT] = useState(30);
+  const [seed, setSeed] = useState(1);
   const [learnerState, setLearnerState] = useState<MCLearnerState>(()=>createMCLearnerState(config, epsilon));
   const [rmseHistory, setRmseHistory] = useState<LearningPoint[]>(()=>[{episode:0,rmse:qTableRMSE(createMCLearnerState(config,epsilon).q,qStar)}]);
   const learnerRef = useRef(learnerState); learnerRef.current = learnerState;
+  const rngRef = useRef<() => number>(mulberry32(1));
+  const rngSeedRef = useRef(1);
 
   const effectiveEpsilon = learnerState.episodesCompleted===0 ? epsilon : learnerState.currentEpsilon;
   const policy = useMemo(()=>epsilonGreedyPolicy(learnerState.q, effectiveEpsilon),[learnerState, effectiveEpsilon]);
   const stateValues = useMemo(()=>policyWeightedStateValues(learnerState.q, policy),[learnerState, policy]);
 
+  // Changing the seed restarts training from scratch with the new stream.
+  if (seed !== rngSeedRef.current) {
+    rngSeedRef.current = seed;
+    rngRef.current = mulberry32(seed);
+    const init = createMCLearnerState(config, epsilon);
+    setLearnerState(init);
+    setRmseHistory([{episode:0,rmse:qTableRMSE(init.q,qStar)}]);
+  }
+
   const runEpisodes = useCallback((n:number)=>{
-    const ns = runMCEpsilonGreedyEpisodes(learnerRef.current,config,n,horizonT,schedule,epsilon,visitMode);
+    const ns = runMCEpsilonGreedyEpisodes(learnerRef.current,config,n,horizonT,schedule,epsilon,visitMode,rngRef.current);
     setLearnerState(ns);
     setRmseHistory(prev=>[...prev,{episode:ns.episodesCompleted,rmse:qTableRMSE(ns.q,qStar)}]);
   },[config,epsilon,schedule,qStar,visitMode,horizonT]);
 
   function reset() {
     const init = createMCLearnerState(config, epsilon);
+    rngRef.current = mulberry32(seed);
     setLearnerState(init); setRmseHistory([{episode:0,rmse:qTableRMSE(init.q,qStar)}]);
   }
 
@@ -229,7 +261,8 @@ function MCEpsilonGreedyDemo() {
     chartData={rmseHistory} lastTrajectory={learnerState.lastTrajectory}
     epsilon={epsilon} onEpsilonChange={setEpsilon} schedule={schedule} onScheduleChange={setSchedule}
     currentEpsilon={effectiveEpsilon} horizonT={horizonT} onHorizonTChange={setHorizonT}
-    rmseNote={schedule==='fixed'?'固定 ε>0 时，学习目标是最佳 ε-soft 策略，Q 与 q* 的 RMSE 不一定趋于 0。':undefined}/>);
+    rmseNote={schedule==='fixed'?'固定 ε>0 时，学习目标是最佳 ε-soft 策略，Q 与 q* 的 RMSE 不一定趋于 0。':undefined}
+    seed={seed} onSeedChange={setSeed}/>);
 }
 
 // ------------------- Shared MC demo shell -------------------
@@ -243,11 +276,13 @@ interface MCDemoShellProps {
   schedule?: EpsilonSchedule; onScheduleChange?: (s: EpsilonSchedule) => void;
   currentEpsilon?: number; horizonT?: number; onHorizonTChange?: (v: number) => void;
   rmseNote?: string;
+  seed?: number; onSeedChange?: (v: number) => void;
 }
 
 function MCDemoShell(props: MCDemoShellProps) {
   const { title,policy,values,episodeCount,visitMode,onVisitModeChange,onRun,onReset,chartData,lastTrajectory,
-    epsilon,onEpsilonChange,schedule,onScheduleChange,currentEpsilon,horizonT,onHorizonTChange,rmseNote } = props;
+    epsilon,onEpsilonChange,schedule,onScheduleChange,currentEpsilon,horizonT,onHorizonTChange,rmseNote,
+    seed,onSeedChange } = props;
   return (<InteractiveDemo title={title}>
     <p className="text-xs text-gray-500 mb-2">本示例为 continuing task。使用长度为 T 的有限截断轨迹近似无限期折扣回报。在其他条件相同时，增大 T 通常会减小截断误差，但会增加计算成本并可能提高样本回报的方差。</p>
     <div className="grid lg:grid-cols-[1fr_340px] gap-6">
@@ -297,6 +332,7 @@ function MCDemoShell(props: MCDemoShellProps) {
             <Button size="sm" onClick={()=>onRun(10)} className="w-full">运行 10 个回合</Button>
             <Button size="sm" variant="outline" onClick={()=>onRun(50)} className="w-full">运行 50 个回合</Button>
             <Button size="sm" variant="outline" onClick={()=>onRun(100)} className="w-full">运行 100 个回合</Button>
+            {seed!==undefined&&onSeedChange&&<SeedControl seed={seed} onChange={onSeedChange} />}
             <Button size="sm" variant="outline" onClick={onReset} className="w-full">重置</Button>
           </CardContent></Card>
       </div>

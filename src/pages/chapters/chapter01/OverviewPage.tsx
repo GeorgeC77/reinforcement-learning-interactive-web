@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { BookOpen, Grid3x3, ArrowRight, ShieldAlert, Route, Gift, Clock } from 'lucide-react';
 import KaTeX from '@/components/KaTeX';
+import { Ch1Playground } from '../overview-playgrounds';
 
 export default function Chapter01OverviewPage() {
   return (
@@ -112,6 +113,9 @@ export default function Chapter01OverviewPage() {
           </div>
         </div>
       </section>
+
+      {/* Interactive preview */}
+      <Ch1Playground />
 
       {/* Next section CTA */}
       <section className="flex flex-wrap justify-end gap-3">
