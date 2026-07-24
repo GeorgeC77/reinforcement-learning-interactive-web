@@ -314,7 +314,7 @@ if (fs.existsSync(smokeSpec)) {
 
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const algorithmTests = Object.keys(packageJson.scripts || {}).filter((k) =>
-  /^test:(sa|td|fa|pg|ac|smoke)$/.test(k)
+  /^test:(sa|td|fa|pg|ac|bandit|dyna|ppo|smoke)$/.test(k)
 );
 
 let e2eProjects: string[] = [];

@@ -294,6 +294,48 @@ export const courseManifest: Part[] = [
           },
         ],
       },
+      {
+        id: "ch11",
+        number: 11,
+        title: "第 11 章 探索与规划",
+        sections: [
+          {
+            id: "ch11-overview",
+            title: "11.0 课程概览",
+            path: "/ch11/overview",
+            status: "completed",
+            description: "探索-利用权衡与模型学习的学习路线。",
+          },
+          {
+            id: "ch11-exploration",
+            title: "11.1 探索与规划",
+            path: "/ch11/exploration",
+            status: "completed",
+            description: "多臂老虎机探索策略（ε-贪心/UCB/softmax）与 Dyna-Q。",
+          },
+        ],
+      },
+      {
+        id: "ch12",
+        number: 12,
+        title: "第 12 章 策略优化进阶",
+        sections: [
+          {
+            id: "ch12-overview",
+            title: "12.0 课程概览",
+            path: "/ch12/overview",
+            status: "completed",
+            description: "从 REINFORCE 到 PPO 的学习路线。",
+          },
+          {
+            id: "ch12-ppo",
+            title: "12.1 PPO 直觉",
+            path: "/ch12/ppo",
+            status: "completed",
+            description: "裁剪目标函数与信任域直觉。",
+          },
+        ],
+      },
     ],
   },
 ];

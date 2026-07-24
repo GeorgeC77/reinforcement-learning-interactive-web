@@ -22,6 +22,8 @@ import {
   MousePointer2,
   Scale,
   FlaskConical,
+  Compass,
+  ShieldCheck,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -50,7 +52,9 @@ type ChapterKey =
   | 'ch07'
   | 'ch08'
   | 'ch09'
-  | 'ch10';
+  | 'ch10'
+  | 'ch11'
+  | 'ch12';
 
 const chapter01Items: NavItem[] = [
   { to: '/ch01/overview', label: '课程概览', icon: BookOpen },
@@ -110,6 +114,16 @@ const chapter10Items: NavItem[] = [
   { to: '/ch10/ac', label: 'Actor-Critic', icon: Activity },
 ];
 
+const chapter11Items: NavItem[] = [
+  { to: '/ch11/overview', label: '课程概览', icon: BookOpen },
+  { to: '/ch11/exploration', label: '探索与规划', icon: Compass },
+];
+
+const chapter12Items: NavItem[] = [
+  { to: '/ch12/overview', label: '课程概览', icon: BookOpen },
+  { to: '/ch12/ppo', label: 'PPO 直觉', icon: ShieldCheck },
+];
+
 const chapterConfig: Record<
   Exclude<ChapterKey, 'home'>,
   { label: string; icon: React.ElementType; items: NavItem[]; pathPrefix?: string }
@@ -124,6 +138,8 @@ const chapterConfig: Record<
   ch08: { label: '第 8 章 值函数方法', icon: Brain, items: chapter08Items, pathPrefix: '/ch08/' },
   ch09: { label: '第 9 章 策略梯度方法', icon: GitBranch, items: chapter09Items, pathPrefix: '/ch09/' },
   ch10: { label: '第 10 章 Actor-Critic', icon: Activity, items: chapter10Items, pathPrefix: '/ch10/' },
+  ch11: { label: '第 11 章 探索与规划', icon: Compass, items: chapter11Items, pathPrefix: '/ch11/' },
+  ch12: { label: '第 12 章 策略优化进阶', icon: ShieldCheck, items: chapter12Items, pathPrefix: '/ch12/' },
 };
 
 function getCurrentChapter(path: string): ChapterKey {

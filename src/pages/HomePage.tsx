@@ -60,7 +60,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* Course Directory: 10 chapters flat */}
+      {/* Course Directory: chapters flat */}
       <section className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 md:p-8">
         <div className="flex items-center gap-3 mb-6">
           <BookOpen className="w-6 h-6 text-blue-600" />

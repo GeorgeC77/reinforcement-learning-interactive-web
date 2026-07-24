@@ -30,6 +30,10 @@ const routes = [
   '/#/ch09/pg',
   '/#/ch10/overview',
   '/#/ch10/ac',
+  '/#/ch11/overview',
+  '/#/ch11/exploration',
+  '/#/ch12/overview',
+  '/#/ch12/ppo',
 ];
 
 function isExternalTransientError(url: string, errorText: string): boolean {

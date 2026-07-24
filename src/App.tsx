@@ -55,6 +55,14 @@ const Chapter09PgPage = lazy(() => import('./pages/chapters/chapter09/PgPage'));
 const Chapter10OverviewPage = lazy(() => import('./pages/chapters/chapter10/OverviewPage'));
 const Chapter10AcPage = lazy(() => import('./pages/chapters/chapter10/AcPage'));
 
+// Chapter 11: Exploration & Planning
+const Chapter11OverviewPage = lazy(() => import('./pages/chapters/chapter11/OverviewPage'));
+const Chapter11ExplorationPage = lazy(() => import('./pages/chapters/chapter11/ExplorationPage'));
+
+// Chapter 12: Advanced Policy Optimization
+const Chapter12OverviewPage = lazy(() => import('./pages/chapters/chapter12/OverviewPage'));
+const Chapter12PpoPage = lazy(() => import('./pages/chapters/chapter12/PpoPage'));
+
 function App() {
   return (
     <HashRouter>
@@ -109,6 +117,14 @@ function App() {
           {/* Chapter 10 */}
           <Route path="/ch10/overview" element={<Chapter10OverviewPage />} />
           <Route path="/ch10/ac" element={<Chapter10AcPage />} />
+
+          {/* Chapter 11 */}
+          <Route path="/ch11/overview" element={<Chapter11OverviewPage />} />
+          <Route path="/ch11/exploration" element={<Chapter11ExplorationPage />} />
+
+          {/* Chapter 12 */}
+          <Route path="/ch12/overview" element={<Chapter12OverviewPage />} />
+          <Route path="/ch12/ppo" element={<Chapter12PpoPage />} />
         </Route>
       </Routes>
     </HashRouter>

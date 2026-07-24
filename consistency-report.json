@@ -42,7 +42,7 @@
       "reason": "accepts an optional seeded rng; unseeded Math.random only when the caller does not provide one"
     }
   ],
-  "routeCount": 29,
+  "routeCount": 33,
   "testCoverage": {
     "algorithmTests": [
       "test:sa",
@@ -50,12 +50,15 @@
       "test:fa",
       "test:pg",
       "test:ac",
+      "test:bandit",
+      "test:dyna",
+      "test:ppo",
       "test:smoke"
     ],
     "e2eProjects": [
       "chromium",
       "mobile-chromium"
     ],
-    "routeCount": 29
+    "routeCount": 33
   }
 }
